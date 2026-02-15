@@ -1,0 +1,5 @@
+{
+  "name": "ScholarTwin AI",
+  "description": "A dual-view PDF translation tool for academic papers using Gemini API. Features academic tone selection, term explanation with citations, and structural analysis.",
+  "requestFramePermissions": []
+}
