@@ -100,7 +100,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ onLoginSuccess }) => {
                 placeholder={isLoginView ? "Email or 'shoutjoy1'" : "Email address (Google ID)"}
                 value={formData.email}
                 onChange={handleChange}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none transition-all"
+                className="w-full px-4 py-2 bg-gray-700 border border-gray-600 text-white rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none transition-all placeholder-gray-400"
               />
             </div>
             
@@ -112,7 +112,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ onLoginSuccess }) => {
                 placeholder="Password"
                 value={formData.password}
                 onChange={handleChange}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none transition-all"
+                className="w-full px-4 py-2 bg-gray-700 border border-gray-600 text-white rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none transition-all placeholder-gray-400"
               />
             </div>
 
@@ -126,7 +126,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ onLoginSuccess }) => {
                     placeholder="Your Name"
                     value={formData.name}
                     onChange={handleChange}
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none transition-all"
+                    className="w-full px-4 py-2 bg-gray-700 border border-gray-600 text-white rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none transition-all placeholder-gray-400"
                   />
                 </div>
                 <div>
@@ -137,7 +137,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ onLoginSuccess }) => {
                     placeholder="010-0000-0000"
                     value={formData.phone}
                     onChange={handleChange}
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none transition-all"
+                    className="w-full px-4 py-2 bg-gray-700 border border-gray-600 text-white rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none transition-all placeholder-gray-400"
                   />
                 </div>
                 <div className="flex items-center gap-2 mt-2">
@@ -147,7 +147,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ onLoginSuccess }) => {
                         name="isPaidRequest" 
                         checked={formData.isPaidRequest}
                         onChange={handleChange}
-                        className="rounded text-primary-600 focus:ring-primary-500"
+                        className="rounded text-primary-600 focus:ring-primary-500 border-gray-600 bg-gray-700"
                     />
                     <label htmlFor="isPaidRequest" className="text-sm text-gray-600">Apply for Premium Membership (Paid)</label>
                 </div>
