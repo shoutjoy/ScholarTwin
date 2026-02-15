@@ -25,7 +25,7 @@ export const downloadText = (filename: string, text: string) => {
   document.body.removeChild(element);
 };
 
-export const printTranslatedPdf = (title: string, segments: { original: string; translated: string; type: string }[]) => {
+export const printTranslatedPdf = (title: string, segments: { original: string; translated: string; type: string }[], fontSizePercentage: number = 100) => {
   // Use a unique name to prevent caching issues
   const printWindow = window.open('', '_blank');
   
@@ -51,6 +51,7 @@ export const printTranslatedPdf = (title: string, segments: { original: string; 
             color: #333;
             max-width: 800px;
             margin: 0 auto;
+            font-size: ${fontSizePercentage}%;
           }
           h1 { text-align: center; margin-bottom: 40px; border-bottom: 2px solid #eee; padding-bottom: 20px; }
           .segment { margin-bottom: 24px; page-break-inside: avoid; }
@@ -65,7 +66,6 @@ export const printTranslatedPdf = (title: string, segments: { original: string; 
           }
           .translated { 
             color: #000; 
-            font-size: 1.1em; 
             text-align: justify;
           }
           .heading .translated { 

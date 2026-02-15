@@ -32,6 +32,7 @@ const App: React.FC = () => {
   const [showTools, setShowTools] = useState(false);
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
   const [showPdfMenu, setShowPdfMenu] = useState(false);
+  const [pdfFontSize, setPdfFontSize] = useState<number>(100);
 
   // Init Auth
   useEffect(() => {
@@ -191,7 +192,7 @@ const App: React.FC = () => {
 
   const handleDownloadTranslatedPdf = () => {
     if (segments.length === 0 || !metadata) return;
-    printTranslatedPdf(metadata.title, segments);
+    printTranslatedPdf(metadata.title, segments, pdfFontSize);
     setShowPdfMenu(false);
   };
 
@@ -270,11 +271,22 @@ const App: React.FC = () => {
                     PDF ▼
                   </button>
                   {showPdfMenu && (
-                    <div className="absolute right-0 top-full mt-2 w-48 bg-white rounded-lg shadow-xl border border-gray-100 overflow-hidden z-50">
-                      <button onClick={handleDownloadOriginalPdf} className="w-full text-left px-4 py-3 text-xs hover:bg-gray-50 flex items-center gap-2">
+                    <div className="absolute right-0 top-full mt-2 w-56 bg-white rounded-lg shadow-xl border border-gray-100 overflow-hidden z-50">
+                      
+                      {/* Font Size Control */}
+                      <div className="px-4 py-2 border-b border-gray-100 bg-gray-50">
+                         <label className="text-[10px] uppercase font-bold text-gray-500 block mb-1">PDF Font Size</label>
+                         <div className="flex items-center justify-between bg-white border border-gray-200 rounded">
+                           <button onClick={() => setPdfFontSize(Math.max(50, pdfFontSize - 10))} className="px-2 py-1 text-gray-500 hover:bg-gray-100 font-bold">-</button>
+                           <span className="text-xs font-medium text-gray-700">{pdfFontSize}%</span>
+                           <button onClick={() => setPdfFontSize(Math.min(200, pdfFontSize + 10))} className="px-2 py-1 text-gray-500 hover:bg-gray-100 font-bold">+</button>
+                         </div>
+                      </div>
+
+                      <button onClick={handleDownloadOriginalPdf} className="w-full text-left px-4 py-3 text-xs hover:bg-gray-50 flex items-center gap-2 text-gray-700">
                         <span>📄</span> Download Original (PDF)
                       </button>
-                      <button onClick={handleDownloadTranslatedPdf} className="w-full text-left px-4 py-3 text-xs hover:bg-gray-50 flex items-center gap-2 border-t border-gray-50">
+                      <button onClick={handleDownloadTranslatedPdf} className="w-full text-left px-4 py-3 text-xs hover:bg-gray-50 flex items-center gap-2 border-t border-gray-50 text-gray-700">
                         <span>🌏</span> Download Translated (PDF)
                       </button>
                     </div>
@@ -291,9 +303,9 @@ const App: React.FC = () => {
                   </button>
                   {showDownloadMenu && (
                     <div className="absolute right-0 top-full mt-2 w-32 bg-white rounded-lg shadow-xl border border-gray-100 overflow-hidden z-50">
-                      <button onClick={() => handleDownloadTxt('english')} className="w-full text-left px-4 py-2 text-xs hover:bg-gray-50">English Only</button>
-                      <button onClick={() => handleDownloadTxt('korean')} className="w-full text-left px-4 py-2 text-xs hover:bg-gray-50">Korean Only</button>
-                      <button onClick={() => handleDownloadTxt('twin')} className="w-full text-left px-4 py-2 text-xs hover:bg-gray-50">Twin View</button>
+                      <button onClick={() => handleDownloadTxt('english')} className="w-full text-left px-4 py-2 text-xs hover:bg-gray-50 text-gray-700">English Only</button>
+                      <button onClick={() => handleDownloadTxt('korean')} className="w-full text-left px-4 py-2 text-xs hover:bg-gray-50 text-gray-700">Korean Only</button>
+                      <button onClick={() => handleDownloadTxt('twin')} className="w-full text-left px-4 py-2 text-xs hover:bg-gray-50 text-gray-700">Twin View</button>
                     </div>
                   )}
                 </div>
