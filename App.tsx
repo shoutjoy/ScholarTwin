@@ -1,13 +1,21 @@
+
 import React, { useState, useEffect } from 'react';
-import { TranslationTone, PaperSegment, VocabularyItem, ConclusionSummary, PaperMetadata } from './types';
+import { TranslationTone, PaperSegment, VocabularyItem, ConclusionSummary, PaperMetadata, User } from './types';
 import { fileToBase64, downloadText, printTranslatedPdf } from './services/fileHelper';
 import { analyzePdf, extractVocabulary, generateConclusion, findReferenceDetails } from './services/geminiService';
+import { authService } from './services/authService';
 import FileUpload from './components/FileUpload';
 import TwinView from './components/TwinView';
 import ToolsPanel from './components/ToolsPanel';
+import AuthModal from './components/AuthModal';
+import AdminDashboard from './components/AdminDashboard';
 
 const App: React.FC = () => {
-  // State
+  // Auth State
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [showAdmin, setShowAdmin] = useState(false);
+
+  // App State
   const [segments, setSegments] = useState<PaperSegment[]>([]);
   const [metadata, setMetadata] = useState<PaperMetadata | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -25,6 +33,12 @@ const App: React.FC = () => {
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
   const [showPdfMenu, setShowPdfMenu] = useState(false);
 
+  // Init Auth
+  useEffect(() => {
+    const user = authService.getCurrentUser();
+    if (user) setCurrentUser(user);
+  }, []);
+
   useEffect(() => {
     if (selectedFile) {
       const url = URL.createObjectURL(selectedFile);
@@ -35,6 +49,18 @@ const App: React.FC = () => {
     }
   }, [selectedFile]);
 
+  const handleLoginSuccess = (user: User) => {
+    setCurrentUser(user);
+  };
+
+  const handleLogout = () => {
+    authService.logout();
+    setCurrentUser(null);
+    setShowAdmin(false);
+    handleRemoveFile();
+  };
+
+  // --- Core App Logic (Same as before) ---
   const handleFileSelect = (file: File) => {
     setSelectedFile(file);
     setSegments([]); 
@@ -54,7 +80,7 @@ const App: React.FC = () => {
       const base64 = await fileToBase64(selectedFile);
       const result = await analyzePdf(base64, tone, range);
       setSegments(result.segments);
-      if (!metadata) { // Keep initial metadata if already exists to avoid overwrite with partial data
+      if (!metadata) {
           setMetadata(result.metadata);
       }
       setCurrentActiveRange(range || 'All');
@@ -198,6 +224,12 @@ const App: React.FC = () => {
     }
   };
 
+  // --- Render ---
+
+  if (!currentUser) {
+    return <AuthModal onLoginSuccess={handleLoginSuccess} />;
+  }
+
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-gray-50">
       {/* Header */}
@@ -209,64 +241,86 @@ const App: React.FC = () => {
            <h1 className="text-xl font-bold text-gray-800 tracking-tight">ScholarTwin <span className="text-primary-500 font-light">AI</span></h1>
         </div>
 
-        {segments.length > 0 && (
-          <div className="flex items-center gap-2">
-            <button 
-              onClick={handleResetTranslation}
-              className="text-sm font-medium text-gray-500 hover:text-gray-900 px-3 py-2 rounded-lg hover:bg-gray-100 transition-colors mr-2 border border-gray-200"
-            >
-              ← Back to File
-            </button>
-            <div className="h-6 w-px bg-gray-300 mx-2"></div>
-            
-            <button 
-              onClick={() => setShowTools(true)}
-              className="text-sm font-medium text-gray-600 hover:text-primary-600 px-3 py-2 rounded-lg hover:bg-gray-100 transition-colors"
-              disabled={isProcessing}
-            >
-              Study Assistant
-            </button>
-            
-            <div className="flex bg-gray-100 rounded-lg p-1 gap-1 relative">
-              {/* PDF Menu */}
-              <div className="relative">
-                <button 
-                  onClick={() => setShowPdfMenu(!showPdfMenu)}
-                  className="px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-white hover:shadow-sm rounded transition-all flex items-center gap-1"
-                >
-                  PDF ▼
-                </button>
-                {showPdfMenu && (
-                  <div className="absolute right-0 top-full mt-2 w-48 bg-white rounded-lg shadow-xl border border-gray-100 overflow-hidden z-50">
-                    <button onClick={handleDownloadOriginalPdf} className="w-full text-left px-4 py-3 text-xs hover:bg-gray-50 flex items-center gap-2">
-                      <span>📄</span> Download Original (PDF)
-                    </button>
-                    <button onClick={handleDownloadTranslatedPdf} className="w-full text-left px-4 py-3 text-xs hover:bg-gray-50 flex items-center gap-2 border-t border-gray-50">
-                      <span>🌏</span> Download Translated (PDF)
-                    </button>
-                  </div>
-                )}
-              </div>
+        <div className="flex items-center gap-4">
+          {currentUser.isAdmin && (
+             <button 
+               onClick={() => setShowAdmin(true)}
+               className="text-xs bg-gray-800 text-white px-3 py-1.5 rounded hover:bg-gray-700 transition-colors"
+             >
+               Admin Dashboard
+             </button>
+          )}
+
+          {segments.length > 0 ? (
+            <div className="flex items-center gap-2">
+              <button 
+                onClick={handleResetTranslation}
+                className="text-sm font-medium text-gray-500 hover:text-gray-900 px-3 py-2 rounded-lg hover:bg-gray-100 transition-colors mr-2 border border-gray-200"
+              >
+                ← Back
+              </button>
               
-              {/* TXT Menu */}
-              <div className="relative">
-                <button 
-                  onClick={() => setShowDownloadMenu(!showDownloadMenu)}
-                  className="px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-white hover:shadow-sm rounded transition-all flex items-center gap-1"
-                >
-                  TXT ▼
-                </button>
-                {showDownloadMenu && (
-                  <div className="absolute right-0 top-full mt-2 w-32 bg-white rounded-lg shadow-xl border border-gray-100 overflow-hidden z-50">
-                    <button onClick={() => handleDownloadTxt('english')} className="w-full text-left px-4 py-2 text-xs hover:bg-gray-50">English Only</button>
-                    <button onClick={() => handleDownloadTxt('korean')} className="w-full text-left px-4 py-2 text-xs hover:bg-gray-50">Korean Only</button>
-                    <button onClick={() => handleDownloadTxt('twin')} className="w-full text-left px-4 py-2 text-xs hover:bg-gray-50">Twin View</button>
-                  </div>
-                )}
+              <button 
+                onClick={() => setShowTools(true)}
+                className="text-sm font-medium text-gray-600 hover:text-primary-600 px-3 py-2 rounded-lg hover:bg-gray-100 transition-colors"
+                disabled={isProcessing}
+              >
+                Study Assistant
+              </button>
+              
+              <div className="flex bg-gray-100 rounded-lg p-1 gap-1 relative">
+                {/* PDF Menu */}
+                <div className="relative">
+                  <button 
+                    onClick={() => setShowPdfMenu(!showPdfMenu)}
+                    className="px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-white hover:shadow-sm rounded transition-all flex items-center gap-1"
+                  >
+                    PDF ▼
+                  </button>
+                  {showPdfMenu && (
+                    <div className="absolute right-0 top-full mt-2 w-48 bg-white rounded-lg shadow-xl border border-gray-100 overflow-hidden z-50">
+                      <button onClick={handleDownloadOriginalPdf} className="w-full text-left px-4 py-3 text-xs hover:bg-gray-50 flex items-center gap-2">
+                        <span>📄</span> Download Original (PDF)
+                      </button>
+                      <button onClick={handleDownloadTranslatedPdf} className="w-full text-left px-4 py-3 text-xs hover:bg-gray-50 flex items-center gap-2 border-t border-gray-50">
+                        <span>🌏</span> Download Translated (PDF)
+                      </button>
+                    </div>
+                  )}
+                </div>
+                
+                {/* TXT Menu */}
+                <div className="relative">
+                  <button 
+                    onClick={() => setShowDownloadMenu(!showDownloadMenu)}
+                    className="px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-white hover:shadow-sm rounded transition-all flex items-center gap-1"
+                  >
+                    TXT ▼
+                  </button>
+                  {showDownloadMenu && (
+                    <div className="absolute right-0 top-full mt-2 w-32 bg-white rounded-lg shadow-xl border border-gray-100 overflow-hidden z-50">
+                      <button onClick={() => handleDownloadTxt('english')} className="w-full text-left px-4 py-2 text-xs hover:bg-gray-50">English Only</button>
+                      <button onClick={() => handleDownloadTxt('korean')} className="w-full text-left px-4 py-2 text-xs hover:bg-gray-50">Korean Only</button>
+                      <button onClick={() => handleDownloadTxt('twin')} className="w-full text-left px-4 py-2 text-xs hover:bg-gray-50">Twin View</button>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          ) : (
+            <div className="text-sm text-gray-500 mr-2 flex items-center gap-2">
+               <span>Welcome, <strong>{currentUser.name}</strong></span>
+               {currentUser.isPaid && <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded border border-green-200">Premium</span>}
+            </div>
+          )}
+
+          <button 
+            onClick={handleLogout}
+            className="text-xs text-red-500 hover:text-red-700 font-medium px-2 py-1"
+          >
+            Logout
+          </button>
+        </div>
       </header>
 
       {/* Main Content */}
@@ -430,6 +484,8 @@ const App: React.FC = () => {
             isProcessing={isProcessing}
           />
         )}
+
+        {showAdmin && <AdminDashboard onClose={() => setShowAdmin(false)} />}
       </main>
     </div>
   );

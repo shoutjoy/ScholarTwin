@@ -1,3 +1,4 @@
+
 export enum TranslationTone {
   ACADEMIC = 'Academic (~이다)',
   EXPLANATORY = 'Explanatory (설명체)',
@@ -58,4 +59,21 @@ export interface ProcessingState {
   isProcessing: boolean;
   progress: number; // 0-100
   error: string | null;
+}
+
+// Auth Types
+export interface User {
+  id: string; // email as id
+  password?: string; // optional for google auth
+  name: string;
+  phone?: string;
+  isPaid: boolean;
+  isActive: boolean;
+  isAdmin: boolean;
+  provider: 'local' | 'google';
+}
+
+export interface AuthState {
+  user: User | null;
+  isAuthenticated: boolean;
 }
