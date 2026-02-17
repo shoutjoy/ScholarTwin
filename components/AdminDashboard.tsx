@@ -15,7 +15,13 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ onClose }) => {
   }, []);
 
   const loadUsers = () => {
-    setUsers(authService.getUsers());
+    // Sort so pending users (isActive=false) are at the top
+    const allUsers = authService.getUsers();
+    allUsers.sort((a, b) => {
+        if (a.isActive === b.isActive) return 0;
+        return a.isActive ? 1 : -1;
+    });
+    setUsers(allUsers);
   };
 
   const handleToggle = (id: string, field: 'isActive' | 'isPaid') => {
@@ -52,47 +58,54 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ onClose }) => {
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
-              {users.map((user) => (
-                <tr key={user.id} className="hover:bg-gray-50">
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <div className="flex items-center">
-                      <div className="flex-shrink-0 h-10 w-10 bg-primary-100 text-primary-600 rounded-full flex items-center justify-center font-bold">
-                        {user.name.charAt(0)}
+              {users.map((user) => {
+                const isPending = !user.isActive;
+                return (
+                  <tr key={user.id} className={`${isPending ? 'bg-yellow-50' : 'hover:bg-gray-50'}`}>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="flex items-center">
+                        <div className={`flex-shrink-0 h-10 w-10 rounded-full flex items-center justify-center font-bold ${isPending ? 'bg-yellow-200 text-yellow-800' : 'bg-primary-100 text-primary-600'}`}>
+                          {user.name.charAt(0)}
+                        </div>
+                        <div className="ml-4">
+                          <div className="text-sm font-medium text-gray-900">
+                             {user.name} 
+                             {user.isAdmin && <span className="text-xs bg-gray-800 text-white px-1.5 py-0.5 rounded ml-1">Admin</span>}
+                             {isPending && <span className="text-xs bg-red-100 text-red-600 px-1.5 py-0.5 rounded ml-1 border border-red-200 font-bold">Pending Approval</span>}
+                          </div>
+                          <div className="text-sm text-gray-500">{user.id}</div>
+                        </div>
                       </div>
-                      <div className="ml-4">
-                        <div className="text-sm font-medium text-gray-900">{user.name} {user.isAdmin && <span className="text-xs bg-gray-800 text-white px-1.5 py-0.5 rounded ml-1">Admin</span>}</div>
-                        <div className="text-sm text-gray-500">{user.id}</div>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {user.phone || '-'}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${user.provider === 'google' ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-800'}`}>
-                      {user.provider}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-center">
-                    <button 
-                      onClick={() => handleToggle(user.id, 'isPaid')}
-                      className={`relative inline-flex flex-shrink-0 h-6 w-11 border-2 border-transparent rounded-full cursor-pointer transition-colors ease-in-out duration-200 focus:outline-none ${user.isPaid ? 'bg-green-500' : 'bg-gray-200'}`}
-                      disabled={user.isAdmin}
-                    >
-                      <span className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transform ring-0 transition ease-in-out duration-200 ${user.isPaid ? 'translate-x-5' : 'translate-x-0'}`} />
-                    </button>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-center">
-                    <button 
-                      onClick={() => handleToggle(user.id, 'isActive')}
-                      className={`relative inline-flex flex-shrink-0 h-6 w-11 border-2 border-transparent rounded-full cursor-pointer transition-colors ease-in-out duration-200 focus:outline-none ${user.isActive ? 'bg-primary-600' : 'bg-gray-200'}`}
-                      disabled={user.isAdmin}
-                    >
-                      <span className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transform ring-0 transition ease-in-out duration-200 ${user.isActive ? 'translate-x-5' : 'translate-x-0'}`} />
-                    </button>
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {user.phone || '-'}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${user.provider === 'google' ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-800'}`}>
+                        {user.provider}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-center">
+                      <button 
+                        onClick={() => handleToggle(user.id, 'isPaid')}
+                        className={`relative inline-flex flex-shrink-0 h-6 w-11 border-2 border-transparent rounded-full cursor-pointer transition-colors ease-in-out duration-200 focus:outline-none ${user.isPaid ? 'bg-green-500' : 'bg-gray-200'}`}
+                        disabled={user.isAdmin}
+                      >
+                        <span className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transform ring-0 transition ease-in-out duration-200 ${user.isPaid ? 'translate-x-5' : 'translate-x-0'}`} />
+                      </button>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-center">
+                      <button 
+                        onClick={() => handleToggle(user.id, 'isActive')}
+                        className={`relative inline-flex flex-shrink-0 h-6 w-11 border-2 border-transparent rounded-full cursor-pointer transition-colors ease-in-out duration-200 focus:outline-none ${user.isActive ? 'bg-primary-600' : 'bg-gray-200'}`}
+                        disabled={user.isAdmin}
+                      >
+                        <span className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transform ring-0 transition ease-in-out duration-200 ${user.isActive ? 'translate-x-5' : 'translate-x-0'}`} />
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

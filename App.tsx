@@ -1,19 +1,24 @@
 
-import React, { useState, useEffect } from 'react';
-import { TranslationTone, PaperSegment, VocabularyItem, ConclusionSummary, PaperMetadata, User } from './types';
-import { fileToBase64, downloadText, printTranslatedPdf } from './services/fileHelper';
-import { analyzePdf, extractVocabulary, generateConclusion, findReferenceDetails } from './services/geminiService';
+import React, { useState, useEffect, useMemo } from 'react';
+import { TranslationTone, PaperSegment, VocabularyItem, ConclusionSummary, PaperMetadata, User, ExtractedFigure, PaperAnalysisResult } from './types';
+import { fileToBase64, downloadText, printTranslatedPdf, renderPdfPagesToImages, getPdfPageCount } from './services/fileHelper';
+import { analyzePaperMetadata, analyzePageContent, extractVocabulary, generateConclusion, findReferenceDetails, explainBlockContent, generatePresentationScript } from './services/geminiService';
 import { authService } from './services/authService';
 import FileUpload from './components/FileUpload';
 import TwinView from './components/TwinView';
 import ToolsPanel from './components/ToolsPanel';
 import AuthModal from './components/AuthModal';
 import AdminDashboard from './components/AdminDashboard';
+import SettingsModal from './components/SettingsModal';
+import ChatInterface from './components/ChatInterface';
+import ExternalPdfViewer from './components/ExternalPdfViewer';
+import SidebarNav from './components/SidebarNav';
 
 const App: React.FC = () => {
   // Auth State
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [showAdmin, setShowAdmin] = useState(false);
+  const [pendingUserCount, setPendingUserCount] = useState(0);
 
   // App State
   const [segments, setSegments] = useState<PaperSegment[]>([]);
@@ -24,34 +29,66 @@ const App: React.FC = () => {
   const [tone, setTone] = useState<TranslationTone>(TranslationTone.ACADEMIC);
   const [pageRange, setPageRange] = useState<string>('');
   const [currentActiveRange, setCurrentActiveRange] = useState<string>(''); 
+  const [lastProcessedPage, setLastProcessedPage] = useState<number>(0);
+  const [totalPages, setTotalPages] = useState<number>(0);
   
   const [isProcessing, setIsProcessing] = useState(false);
+  const [progress, setProgress] = useState(0); 
+  
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const [vocabulary, setVocabulary] = useState<VocabularyItem[]>([]);
   const [conclusion, setConclusion] = useState<ConclusionSummary | null>(null);
   const [showTools, setShowTools] = useState(false);
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
   const [showPdfMenu, setShowPdfMenu] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showChat, setShowChat] = useState(false);
   const [pdfFontSize, setPdfFontSize] = useState<number>(100);
+
+  // UI State
+  const [showPdfWindow, setShowPdfWindow] = useState(false);
+  const [scrollSyncPercentage, setScrollSyncPercentage] = useState(0);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+
+  // Computed state for sidebar
+  const processedPageIndices = useMemo(() => {
+      const indices = new Set(segments.map(s => s.pageIndex));
+      return Array.from(indices).sort((a, b) => a - b);
+  }, [segments]);
 
   // Init Auth
   useEffect(() => {
     const user = authService.getCurrentUser();
-    if (user) setCurrentUser(user);
+    if (user) {
+        setCurrentUser(user);
+        if (user.isAdmin) {
+            setPendingUserCount(authService.getPendingUserCount());
+        }
+    }
   }, []);
 
   useEffect(() => {
     if (selectedFile) {
       const url = URL.createObjectURL(selectedFile);
       setPdfUrl(url);
+      
+      // Fetch Total Page Count immediately
+      getPdfPageCount(selectedFile).then(count => {
+          setTotalPages(count);
+      });
+
       return () => URL.revokeObjectURL(url);
     } else {
       setPdfUrl(null);
+      setTotalPages(0);
     }
   }, [selectedFile]);
 
   const handleLoginSuccess = (user: User) => {
     setCurrentUser(user);
+    if (user.isAdmin) {
+        setPendingUserCount(authService.getPendingUserCount());
+    }
   };
 
   const handleLogout = () => {
@@ -61,7 +98,7 @@ const App: React.FC = () => {
     handleRemoveFile();
   };
 
-  // --- Core App Logic (Same as before) ---
+  // --- Core App Logic ---
   const handleFileSelect = (file: File) => {
     setSelectedFile(file);
     setSegments([]); 
@@ -70,70 +107,140 @@ const App: React.FC = () => {
     setConclusion(null);
     setPageRange('');
     setCurrentActiveRange('');
+    setLastProcessedPage(0);
+    setTotalPages(0);
+    setShowPdfWindow(false);
   };
 
-  const executeTranslation = async (range: string | undefined) => {
+  const executeTranslation = async (startPage: number, endPage: number, isAppend: boolean = false) => {
     if (!selectedFile) return;
     try {
       setIsProcessing(true);
-      setSegments([]); 
+      setProgress(5); 
+      if (!isAppend) setSegments([]); 
       
-      const base64 = await fileToBase64(selectedFile);
-      const result = await analyzePdf(base64, tone, range);
-      setSegments(result.segments);
-      if (!metadata) {
-          setMetadata(result.metadata);
+      let pageImages;
+      try {
+        pageImages = await renderPdfPagesToImages(selectedFile, endPage);
+        setTotalPages(prev => Math.max(prev, pageImages.length));
+      } catch (pdfError: any) {
+        console.error("PDF Parsing failed", pdfError);
+        alert(`Failed to read the PDF file. \nError: ${pdfError.message}`);
+        setIsProcessing(false);
+        return;
       }
-      setCurrentActiveRange(range || 'All');
-      if (range) setPageRange(range);
-    } catch (error) {
-      console.error(error);
-      alert("Failed to process PDF. Check API Key or try a smaller file.");
+
+      const pagesToProcess = pageImages.filter(p => p.pageIndex >= startPage && p.pageIndex <= endPage);
+      
+      if (pagesToProcess.length === 0) {
+           alert("No pages found for this range.");
+           setIsProcessing(false);
+           return;
+      }
+      
+      setShowPdfWindow(true);
+
+      if (!metadata && !isAppend) {
+          setProgress(10);
+          try {
+            const meta = await analyzePaperMetadata(pageImages[0].base64);
+            setMetadata(meta);
+          } catch (metaError) {
+             setMetadata({ title: selectedFile.name, authors: [], year: "", journal: "" });
+          }
+      }
+
+      for (let i = 0; i < pagesToProcess.length; i++) {
+          const pageImg = pagesToProcess[i];
+          const currentProgress = 10 + Math.round(((i + 1) / pagesToProcess.length) * 80);
+          setProgress(currentProgress);
+
+          const pageSegments = await analyzePageContent(pageImg.base64, pageImg.pageIndex - 1, tone);
+          setSegments(prev => {
+              const filtered = prev.filter(s => s.pageIndex !== pageImg.pageIndex);
+              return [...filtered, ...pageSegments];
+          });
+          setLastProcessedPage(Math.max(lastProcessedPage, pageImg.pageIndex));
+      }
+
+      const newRangeStr = `${startPage}-${endPage}`;
+      setCurrentActiveRange(prev => isAppend ? `${prev}, ${newRangeStr}` : newRangeStr);
+      setProgress(100);
+
+    } catch (error: any) {
+      console.error("Translation Error:", error);
+      alert("Failed to process PDF.");
+      setProgress(0);
     } finally {
       setIsProcessing(false);
     }
   };
 
+  const handleRetranslatePage = async (pageIndex: number) => {
+    await executeTranslation(pageIndex, pageIndex, true);
+  };
+
   const handleTranslate = async (isFull: boolean) => {
     if (!selectedFile) return;
-    if (!isFull && !pageRange.trim()) {
-      alert("Please enter a page number (e.g., '1' or '1-3')");
-      return;
+    
+    if (isFull) {
+        await executeTranslation(1, 9999, false);
+    } else {
+        let start = 1;
+        let end = 2; // Default 2 pages
+        
+        if (pageRange.trim()) {
+             const parts = pageRange.split('-').map(p => parseInt(p.trim()));
+             if (!isNaN(parts[0])) start = parts[0];
+             if (parts.length > 1 && !isNaN(parts[1])) end = parts[1];
+             else end = start;
+        }
+
+        await executeTranslation(start, end, false);
     }
-    const rangeToSend = isFull ? undefined : pageRange;
-    await executeTranslation(rangeToSend);
+  };
+  
+  const handleLoadNextBatch = () => {
+      const nextStart = lastProcessedPage + 1;
+      const nextEnd = nextStart + 1; // Load 2 pages
+      executeTranslation(nextStart, nextEnd, true);
+  };
+
+  const handleSidebarPageClick = (pageIndex: number, isProcessed: boolean) => {
+      if (isProcessed) {
+          const el = document.getElementById(`page-container-${pageIndex}`);
+          if (el) {
+              el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+      } else {
+          if (confirm(`Translate Page ${pageIndex} now?`)) {
+              executeTranslation(pageIndex, pageIndex, true);
+          }
+      }
+  };
+
+  const handleSidebarHeadingClick = (segmentId: string) => {
+      const el = document.getElementById(`trans-${segmentId}`); 
+      if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          setHighlightedId(segmentId);
+          setTimeout(() => setHighlightedId(null), 2000);
+      }
   };
 
   const handlePageNavigation = (direction: 'next' | 'prev') => {
-    if (!currentActiveRange || currentActiveRange === 'All') return;
-    const parts = currentActiveRange.split('-').map(p => parseInt(p.trim()));
-    const start = parts[0];
-    const end = parts.length > 1 ? parts[1] : start;
-    if (isNaN(start) || isNaN(end)) return;
-
-    const span = end - start + 1;
-    let newStart, newEnd;
-
-    if (direction === 'next') {
-      newStart = end + 1;
-      newEnd = newStart + span - 1;
-    } else {
-      newEnd = start - 1;
-      newStart = newEnd - span + 1;
-      if (newEnd < 1) return; 
-    }
-    const newRange = newStart === newEnd ? `${newStart}` : `${newStart}-${newEnd}`;
-    executeTranslation(newRange);
   };
 
   const handleResetTranslation = () => {
     setSegments([]); 
     setCurrentActiveRange('');
+    setLastProcessedPage(0);
   };
 
   const handleRemoveFile = () => {
     setSelectedFile(null);
     setSegments([]);
+    setShowPdfWindow(false);
   };
 
   const handleGenerateVocab = async () => {
@@ -143,11 +250,16 @@ const App: React.FC = () => {
       const vocab = await extractVocabulary(segments);
       setVocabulary(vocab);
     } catch (e) {
-      console.error(e);
-      alert("Failed to generate vocabulary");
+      alert("Failed to generate vocabulary.");
     } finally {
       setIsProcessing(false);
     }
+  };
+
+  const handleUpdateVocabItem = (index: number, item: VocabularyItem) => {
+    const newVocab = [...vocabulary];
+    newVocab[index] = item;
+    setVocabulary(newVocab);
   };
 
   const handleGenerateConclusion = async () => {
@@ -157,22 +269,70 @@ const App: React.FC = () => {
       const summary = await generateConclusion(segments);
       setConclusion(summary);
     } catch (e) {
-      console.error(e);
-      alert("Failed to generate conclusion");
+      alert("Failed to generate conclusion.");
     } finally {
       setIsProcessing(false);
     }
   };
 
-  const handleDownloadTxt = (type: 'english' | 'korean' | 'twin') => {
+  const handleGeneratePPT = async () => {
+      if (segments.length === 0) return "";
+      try {
+          return await generatePresentationScript(segments);
+      } catch (e) {
+          alert("Failed to generate PPT script.");
+          return "";
+      }
+  };
+
+  const handleExplainSegment = async (segmentId: string, userPrompt?: string) => {
+    const segmentIndex = segments.findIndex(s => s.id === segmentId);
+    if (segmentIndex === -1) return;
+    
+    if (!userPrompt && (segments[segmentIndex].explanation || segments[segmentIndex].explanationEn)) return;
+
+    const loadingSegments = [...segments];
+    loadingSegments[segmentIndex] = { ...loadingSegments[segmentIndex], isExplaining: true };
+    setSegments(loadingSegments);
+
+    const seg = segments[segmentIndex];
+    try {
+      const result = await explainBlockContent(seg.original, seg.translated, userPrompt);
+      const newSegments = [...segments];
+      newSegments[segmentIndex] = { 
+        ...seg, 
+        explanation: result.korean, 
+        explanationEn: result.english,
+        isExplaining: false 
+      };
+      setSegments(newSegments);
+    } catch (e) {
+      const errorSegments = [...segments];
+      errorSegments[segmentIndex] = { ...errorSegments[segmentIndex], isExplaining: false };
+      setSegments(errorSegments);
+      alert("Failed to explain content.");
+    }
+  };
+
+  const handleToggleBookmark = (id: string) => {
+      setSegments(prev => prev.map(s => s.id === id ? { ...s, isBookmarked: !s.isBookmarked } : s));
+  };
+
+  const handleUpdateNote = (id: string, note: string) => {
+      setSegments(prev => prev.map(s => s.id === id ? { ...s, userNote: note } : s));
+  };
+
+  const handleDownloadTxt = (type: 'english' | 'korean' | 'twin' | 'notebooklm') => {
     if (segments.length === 0) return;
     let content = "";
     if (type === 'english') {
-      content = segments.map(s => s.original).join('\n\n');
+      content = segments.map(s => s.original + (s.userNote ? `\n[NOTE: ${s.userNote}]` : '')).join('\n\n');
     } else if (type === 'korean') {
-      content = segments.map(s => s.translated).join('\n\n');
+      content = segments.map(s => s.translated + (s.userNote ? `\n[NOTE: ${s.userNote}]` : '')).join('\n\n');
+    } else if (type === 'notebooklm') {
+      content = segments.map(s => `## ${s.original}\n${s.translated}\n`).join('\n\n');
     } else {
-      content = segments.map(s => `[Original]\n${s.original}\n\n[Translation]\n${s.translated}\n\n---`).join('\n');
+      content = segments.map(s => `[Original]\n${s.original}\n\n[Translation]\n${s.translated}${s.userNote ? `\n[NOTE: ${s.userNote}]` : ''}\n\n---`).join('\n');
     }
     downloadText(`paper_${type}.txt`, content);
     setShowDownloadMenu(false);
@@ -225,15 +385,12 @@ const App: React.FC = () => {
     }
   };
 
-  // --- Render ---
-
   if (!currentUser) {
     return <AuthModal onLoginSuccess={handleLoginSuccess} />;
   }
 
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-gray-50">
-      {/* Header */}
       <header className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between z-20 shadow-sm flex-none h-16">
         <div className="flex items-center gap-2 cursor-pointer" onClick={() => window.location.reload()}>
            <div className="w-8 h-8 bg-gradient-to-br from-primary-500 to-indigo-600 rounded-lg flex items-center justify-center text-white font-bold text-lg">
@@ -243,7 +400,6 @@ const App: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-4">
-          
           {segments.length > 0 ? (
             <div className="flex items-center gap-2">
               <button 
@@ -262,7 +418,6 @@ const App: React.FC = () => {
               </button>
               
               <div className="flex bg-gray-100 rounded-lg p-1 gap-1 relative">
-                {/* PDF Menu */}
                 <div className="relative">
                   <button 
                     onClick={() => setShowPdfMenu(!showPdfMenu)}
@@ -272,8 +427,6 @@ const App: React.FC = () => {
                   </button>
                   {showPdfMenu && (
                     <div className="absolute right-0 top-full mt-2 w-56 bg-white rounded-lg shadow-xl border border-gray-100 overflow-hidden z-50">
-                      
-                      {/* Font Size Control */}
                       <div className="px-4 py-2 border-b border-gray-100 bg-gray-50">
                          <label className="text-[10px] uppercase font-bold text-gray-500 block mb-1">PDF Font Size</label>
                          <div className="flex items-center justify-between bg-white border border-gray-200 rounded">
@@ -282,7 +435,12 @@ const App: React.FC = () => {
                            <button onClick={() => setPdfFontSize(Math.min(200, pdfFontSize + 10))} className="px-2 py-1 text-gray-500 hover:bg-gray-100 font-bold">+</button>
                          </div>
                       </div>
-
+                      <button 
+                        onClick={() => { setShowPdfWindow(true); setShowPdfMenu(false); }}
+                        className="w-full text-left px-4 py-3 text-xs hover:bg-gray-50 flex items-center gap-2 text-indigo-600 font-medium"
+                      >
+                        <span>❐</span> PDF (New Window)
+                      </button>
                       <button onClick={handleDownloadOriginalPdf} className="w-full text-left px-4 py-3 text-xs hover:bg-gray-50 flex items-center gap-2 text-gray-700">
                         <span>📄</span> Download Original (PDF)
                       </button>
@@ -293,7 +451,6 @@ const App: React.FC = () => {
                   )}
                 </div>
                 
-                {/* TXT Menu */}
                 <div className="relative">
                   <button 
                     onClick={() => setShowDownloadMenu(!showDownloadMenu)}
@@ -302,10 +459,11 @@ const App: React.FC = () => {
                     TXT ▼
                   </button>
                   {showDownloadMenu && (
-                    <div className="absolute right-0 top-full mt-2 w-32 bg-white rounded-lg shadow-xl border border-gray-100 overflow-hidden z-50">
+                    <div className="absolute right-0 top-full mt-2 w-48 bg-white rounded-lg shadow-xl border border-gray-100 overflow-hidden z-50">
                       <button onClick={() => handleDownloadTxt('english')} className="w-full text-left px-4 py-2 text-xs hover:bg-gray-50 text-gray-700">English Only</button>
                       <button onClick={() => handleDownloadTxt('korean')} className="w-full text-left px-4 py-2 text-xs hover:bg-gray-50 text-gray-700">Korean Only</button>
                       <button onClick={() => handleDownloadTxt('twin')} className="w-full text-left px-4 py-2 text-xs hover:bg-gray-50 text-gray-700">Twin View</button>
+                      <button onClick={() => handleDownloadTxt('notebooklm')} className="w-full text-left px-4 py-2 text-xs hover:bg-gray-50 text-indigo-700 bg-indigo-50 font-bold border-t border-gray-100">Prepare for NotebookLM</button>
                     </div>
                   )}
                 </div>
@@ -317,26 +475,38 @@ const App: React.FC = () => {
                {currentUser.isPaid && <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded border border-green-200">Premium</span>}
             </div>
           )}
-
-          {currentUser.isAdmin && (
-             <button 
-               onClick={() => setShowAdmin(true)}
-               title="Admin Dashboard"
-               className="text-gray-500 hover:text-gray-800 p-2 rounded-full hover:bg-gray-100 transition-colors"
-             >
+          
+          <div className="flex items-center gap-2">
+            {segments.length > 0 && (
+                <button
+                onClick={() => setShowChat(!showChat)}
+                title="Chat with Paper"
+                className={`p-2 rounded-full transition-colors ${showChat ? 'bg-indigo-100 text-indigo-600' : 'text-gray-500 hover:bg-gray-100'}`}
+                >
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M8.625 12a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H8.25m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H12m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 0 1-2.555-.337A5.972 5.972 0 0 1 5.41 20.97a5.969 5.969 0 0 1-.474-.065 4.48 4.48 0 0 0 .978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25Z" />
+                </svg>
+                </button>
+            )}
+            <button onClick={() => setShowSettings(true)} title="AI Settings" className="text-gray-500 hover:text-gray-800 p-2 rounded-full hover:bg-gray-100 transition-colors">
                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
-                 <path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 0 1 0 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 0 1 0-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281Z" />
+                 <path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 0 1 0 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281Z" />
                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
                </svg>
-             </button>
-          )}
+            </button>
+          </div>
 
-          <button 
-            onClick={handleLogout}
-            className="text-xs text-red-500 hover:text-red-700 font-medium px-2 py-1"
-          >
-            Logout
-          </button>
+          {currentUser.isAdmin && (
+             <div className="relative">
+                 <button onClick={() => setShowAdmin(true)} title="Admin Dashboard" className="text-gray-500 hover:text-gray-800 p-2 rounded-full hover:bg-gray-100 transition-colors">
+                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+                     <path strokeLinecap="round" strokeLinejoin="round" d="M18 18.72a9.094 9.094 0 0 0 3.741-.479 3 3 0 0 0-4.682-2.72m.94 3.198.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0 1 12 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 0 1 6 18.719m12 0a5.971 5.971 0 0 0-.941-3.197m0 0A5.995 5.995 0 0 0 12 12.75a5.995 5.995 0 0 0-5.058 2.772m0 0a3 3 0 0 0-4.681 2.72 8.986 8.986 0 0 0 3.74.477m.94-3.197a5.971 5.971 0 0 0-.94 3.197M15 6.75a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm6 3a2.25 2.25 0 1 1-4.5 0 2.25 2.25 0 0 1 4.5 0Zm-13.5 0a2.25 2.25 0 1 1-4.5 0 2.25 2.25 0 0 1 4.5 0Z" />
+                   </svg>
+                 </button>
+                 {pendingUserCount > 0 && <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] font-bold rounded-full h-4 w-4 flex items-center justify-center animate-pulse">{pendingUserCount}</span>}
+             </div>
+          )}
+          <button onClick={handleLogout} className="text-xs text-red-500 hover:text-red-700 font-medium px-2 py-1">Logout</button>
         </div>
       </header>
 
@@ -349,30 +519,19 @@ const App: React.FC = () => {
                   <span className="font-bold text-gray-700 inline-block w-10">APA:</span> 
                   <span className="font-serif text-gray-600">{getApaCitation()}</span>
                 </div>
-                <button 
-                  onClick={() => copyToClipboard(getApaCitation())} 
-                  className="text-[10px] px-2 py-0.5 bg-gray-100 border border-gray-300 rounded text-gray-600 hover:bg-gray-200 hover:text-gray-800 transition-colors"
-                >
-                  Copy APA
-                </button>
+                <button onClick={() => copyToClipboard(getApaCitation())} className="text-[10px] px-2 py-0.5 bg-gray-100 border border-gray-300 rounded text-gray-600 hover:bg-gray-200 hover:text-gray-800 transition-colors">Copy APA</button>
              </div>
              <div className="flex items-center justify-between">
                 <div className="flex-1 mr-4">
                   <span className="font-bold text-gray-700 inline-block w-10">MLA:</span> 
                   <span className="font-serif text-gray-600">{getMlaCitation()}</span>
                 </div>
-                <button 
-                  onClick={() => copyToClipboard(getMlaCitation())} 
-                  className="text-[10px] px-2 py-0.5 bg-gray-100 border border-gray-300 rounded text-gray-600 hover:bg-gray-200 hover:text-gray-800 transition-colors"
-                >
-                  Copy MLA
-                </button>
+                <button onClick={() => copyToClipboard(getMlaCitation())} className="text-[10px] px-2 py-0.5 bg-gray-100 border border-gray-300 rounded text-gray-600 hover:bg-gray-200 hover:text-gray-800 transition-colors">Copy MLA</button>
              </div>
           </div>
         )}
 
         {!selectedFile ? (
-          /* State 1: Upload */
           <div className="w-full flex-1 flex flex-col items-center justify-center p-8 animate-in fade-in duration-500">
             <div className="max-w-2xl w-full">
               <FileUpload onFileSelect={handleFileSelect} isProcessing={isProcessing} />
@@ -383,126 +542,129 @@ const App: React.FC = () => {
             </div>
           </div>
         ) : (
-          /* State 2: Result View OR Setup View */
-          <div className="flex-1 flex w-full max-w-7xl mx-auto shadow-xl bg-white overflow-hidden">
+          <div className="flex-1 flex w-full max-w-7xl mx-auto shadow-xl bg-white overflow-hidden h-[calc(100vh-80px)] rounded-xl border border-gray-200">
             {segments.length === 0 ? (
-              /* Setup View */
-              <div className="flex-1 flex flex-col items-center justify-center p-8 bg-gray-50 overflow-y-auto">
-                   <div className="max-w-xl w-full bg-white p-10 rounded-2xl shadow-lg border border-gray-100 text-center">
-                      <div className="w-20 h-20 bg-red-50 text-red-500 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-sm">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-10 h-10">
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
-                        </svg>
-                      </div>
-                      
-                      <h2 className="text-3xl font-bold text-gray-900 mb-2">{selectedFile.name}</h2>
-                      <p className="text-gray-500 mb-8">{(selectedFile.size / 1024 / 1024).toFixed(2)} MB • File Loaded Successfully</p>
+              <div className="flex w-full h-full">
+                  <div className="w-1/2 bg-slate-100 border-r border-gray-200 hidden md:block relative">
+                      {pdfUrl && <object data={`${pdfUrl}#toolbar=0&navpanes=0`} type="application/pdf" className="w-full h-full"><div className="flex flex-col items-center justify-center h-full text-gray-400 p-10 text-center"><p>Preview not available in this browser.</p></div></object>}
+                      <div className="absolute top-4 left-4 bg-black/50 backdrop-blur text-white text-xs px-2 py-1 rounded">PDF Preview</div>
+                  </div>
+                  <div className="w-full md:w-1/2 bg-white flex flex-col overflow-y-auto">
+                       <div className="flex-1 flex flex-col justify-center p-8 md:p-12 max-w-lg mx-auto w-full">
+                            <div className="text-center mb-8">
+                                <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-red-50 text-red-500 mb-4 shadow-sm">
+                                    <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 2H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg>
+                                </div>
+                                <h2 className="text-xl font-bold text-gray-900 line-clamp-2" title={selectedFile.name}>{selectedFile.name}</h2>
+                                <p className="text-sm text-gray-500 mt-1">
+                                    {(selectedFile.size / 1024 / 1024).toFixed(2)} MB • {totalPages > 0 ? `${totalPages} Pages` : 'Loading...'}
+                                </p>
+                            </div>
 
-                      <div className="mb-6 text-left">
-                        <label className="block text-sm font-bold text-gray-700 mb-2">1. Select Translation Tone</label>
-                        <div className="grid grid-cols-2 gap-4">
-                          <button 
-                            onClick={() => setTone(TranslationTone.ACADEMIC)}
-                            className={`p-3 rounded-lg border text-sm font-medium transition-all ${tone === TranslationTone.ACADEMIC ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-gray-200 hover:border-gray-300'}`}
-                          >
-                            Academic (~이다)
-                          </button>
-                          <button 
-                            onClick={() => setTone(TranslationTone.EXPLANATORY)}
-                            className={`p-3 rounded-lg border text-sm font-medium transition-all ${tone === TranslationTone.EXPLANATORY ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-gray-200 hover:border-gray-300'}`}
-                          >
-                            Explanatory (설명체)
-                          </button>
-                        </div>
-                      </div>
+                            <div className="space-y-6">
+                                <div>
+                                  <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Translation Style</label>
+                                  <div className="grid grid-cols-2 gap-3">
+                                    <button onClick={() => setTone(TranslationTone.ACADEMIC)} className={`px-4 py-3 rounded-xl border text-sm font-medium transition-all flex flex-col items-center gap-1 ${tone === TranslationTone.ACADEMIC ? 'border-primary-500 bg-primary-50 text-primary-700 ring-1 ring-primary-500' : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50 text-gray-600'}`}><span>🎓 Academic</span><span className="text-[10px] opacity-70">Formal (~이다)</span></button>
+                                    <button onClick={() => setTone(TranslationTone.EXPLANATORY)} className={`px-4 py-3 rounded-xl border text-sm font-medium transition-all flex flex-col items-center gap-1 ${tone === TranslationTone.EXPLANATORY ? 'border-primary-500 bg-primary-50 text-primary-700 ring-1 ring-primary-500' : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50 text-gray-600'}`}><span>🗣️ Explanatory</span><span className="text-[10px] opacity-70">Easy (~해요)</span></button>
+                                  </div>
+                                </div>
 
-                      <hr className="border-gray-100 my-8" />
-
-                      <div className="text-left">
-                        <label className="block text-sm font-bold text-gray-700 mb-2">2. Choose Translation Scope</label>
-                        
-                        <div className="bg-gray-50 p-4 rounded-xl border border-gray-200 mb-4">
-                          <div className="flex items-center gap-3">
-                            <input 
-                              type="text" 
-                              placeholder="e.g. 1-3" 
-                              value={pageRange}
-                              onChange={(e) => setPageRange(e.target.value)}
-                              className="w-32 bg-white border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-primary-500 focus:border-primary-500 p-2.5 text-center"
-                            />
-                            <button
-                              onClick={() => handleTranslate(false)}
-                              disabled={isProcessing}
-                              className="flex-1 px-4 py-2.5 bg-white border border-primary-600 text-primary-600 font-bold rounded-lg hover:bg-primary-50 transition-colors shadow-sm"
-                            >
-                              Translate Specific Pages
-                            </button>
-                          </div>
-                        </div>
-
-                        <button
-                           onClick={() => handleTranslate(true)}
-                           disabled={isProcessing}
-                           className="w-full px-4 py-3.5 bg-gradient-to-r from-primary-600 to-indigo-600 text-white font-bold rounded-xl hover:from-primary-700 hover:to-indigo-700 shadow-md transition-all flex justify-center items-center gap-2"
-                         >
-                           {isProcessing ? 'Processing...' : 'Translate Full Document'}
-                         </button>
-                         <p className="text-xs text-center text-gray-400 mt-3">Full document translation might take a few minutes depending on size.</p>
-                      </div>
-                      <div className="mt-8 text-center">
-                        <button onClick={handleRemoveFile} className="text-sm text-red-500 hover:text-red-700 hover:underline">
-                          Remove File & Start Over
-                        </button>
-                      </div>
-                   </div>
+                                <div>
+                                  <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Extraction Range</label>
+                                  <div className="space-y-3">
+                                      <button onClick={() => handleTranslate(true)} disabled={isProcessing} className="w-full py-4 bg-gray-900 hover:bg-black text-white font-bold rounded-xl shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2 group disabled:opacity-50 disabled:cursor-not-allowed">
+                                         {isProcessing ? <>Processing...</> : <><span>Analyze Full Document (Default)</span><svg className="w-4 h-4 group-hover:translate-x-1 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg></>}
+                                       </button>
+                                       <div className="relative">
+                                          <div className="absolute inset-0 flex items-center" aria-hidden="true"><div className="w-full border-t border-gray-200"></div></div>
+                                          <div className="relative flex justify-center"><span className="px-2 bg-white text-xs text-gray-400">OR SELECT PAGES</span></div>
+                                        </div>
+                                      <div className="flex gap-2">
+                                          <input type="text" placeholder="e.g. 1-2 (Default: 1-2)" value={pageRange} onChange={(e) => setPageRange(e.target.value)} className="flex-1 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-primary-500 focus:border-primary-500 p-2.5 text-center outline-none" />
+                                          <button onClick={() => handleTranslate(false)} disabled={isProcessing} className="px-6 py-2.5 bg-white border border-gray-300 text-gray-700 font-bold rounded-lg hover:bg-gray-50 transition-colors shadow-sm disabled:opacity-50">Extract</button>
+                                      </div>
+                                  </div>
+                                </div>
+                            </div>
+                            <button onClick={handleRemoveFile} className="mt-8 text-xs text-red-500 hover:text-red-700 underline text-center block w-full">Cancel & Upload Different File</button>
+                       </div>
+                  </div>
               </div>
             ) : (
-              /* TwinView with Controls */
-              <div className="w-full h-full flex flex-col overflow-hidden">
-                 <TwinView 
-                    segments={segments} 
-                    highlightedId={highlightedId} 
-                    onHoverSegment={setHighlightedId}
-                    onCitationClick={handleCitationClick}
-                    pdfUrl={pdfUrl}
-                    currentRange={currentActiveRange}
-                    onNavigatePage={handlePageNavigation}
-                  />
+              <div className="w-full h-full flex overflow-hidden">
+                 {/* Sidebar Navigation */}
+                 <SidebarNav 
+                    totalPages={totalPages}
+                    processedPages={processedPageIndices}
+                    segments={segments}
+                    onPageClick={handleSidebarPageClick}
+                    onHeadingClick={handleSidebarHeadingClick}
+                    isProcessing={isProcessing}
+                    isOpen={isSidebarOpen}
+                    onToggle={() => setIsSidebarOpen(!isSidebarOpen)}
+                 />
+
+                 {/* Main TwinView Area */}
+                 <div className="flex-1 flex flex-col min-w-0">
+                     <TwinView 
+                        segments={segments} 
+                        highlightedId={highlightedId} 
+                        onHoverSegment={setHighlightedId}
+                        onCitationClick={handleCitationClick}
+                        pdfUrl={pdfUrl}
+                        currentRange={currentActiveRange}
+                        onNavigatePage={handlePageNavigation}
+                        onExplainSegment={handleExplainSegment}
+                        onToggleBookmark={handleToggleBookmark}
+                        onUpdateNote={handleUpdateNote}
+                        onSyncScroll={setScrollSyncPercentage}
+                        onRetranslatePage={handleRetranslatePage} 
+                        onLoadNextBatch={handleLoadNextBatch} 
+                      />
+                 </div>
               </div>
             )}
           </div>
         )}
         
-        {isProcessing && (
+        {isProcessing && segments.length === 0 && (
           <div className="absolute inset-0 bg-white/80 backdrop-blur-sm z-50 flex items-center justify-center">
              <div className="bg-white p-8 rounded-2xl shadow-2xl flex flex-col items-center border border-gray-100 max-w-sm w-full mx-4">
-               <div className="relative mb-6">
+               <div className="relative mb-4">
                  <div className="w-16 h-16 rounded-full border-4 border-gray-100"></div>
                  <div className="absolute top-0 left-0 w-16 h-16 rounded-full border-4 border-primary-600 border-t-transparent animate-spin"></div>
                </div>
-               <h3 className="text-xl font-bold text-gray-800 mb-2">Analyzing & Translating</h3>
-               <p className="text-gray-500 text-center mb-6">
-                 {segments.length === 0 ? "Analyzing structure..." : "Processing pages..."}
-               </p>
-               <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
-                 <div className="h-full bg-primary-500 animate-pulse rounded-full w-full origin-left scale-x-50"></div>
+               <h3 className="text-xl font-bold text-gray-800 mb-1">Analyzing & Translating</h3>
+               <p className="text-gray-500 text-center mb-6 text-sm">Processing Content...</p>
+               <div className="w-full bg-gray-100 rounded-full h-3 overflow-hidden mb-2">
+                 <div className="h-full bg-primary-600 rounded-full transition-all duration-300 ease-out" style={{ width: `${progress}%` }}></div>
                </div>
+               <p className="text-xs font-bold text-primary-600 text-right">{Math.round(progress)}%</p>
              </div>
           </div>
         )}
+        
+        {isProcessing && segments.length > 0 && (
+             <div className="absolute top-20 right-8 z-50 bg-white shadow-lg border border-gray-200 rounded-full px-4 py-2 flex items-center gap-3 animate-pulse">
+                  <div className="w-4 h-4 border-2 border-primary-600 border-t-transparent rounded-full animate-spin"></div>
+                  <span className="text-xs font-bold text-gray-700">Loading Next Pages...</span>
+             </div>
+        )}
 
-        {showTools && (
-          <ToolsPanel 
-            vocabulary={vocabulary} 
-            conclusion={conclusion} 
-            onClose={() => setShowTools(false)}
-            onGenerateVocab={handleGenerateVocab}
-            onGenerateConclusion={handleGenerateConclusion}
-            isProcessing={isProcessing}
+        {/* Portal: External PDF Viewer */}
+        {showPdfWindow && pdfUrl && (
+          <ExternalPdfViewer 
+            pdfUrl={pdfUrl} 
+            onClose={() => setShowPdfWindow(false)} 
+            scrollPercentage={scrollSyncPercentage}
           />
         )}
 
+        {showTools && <ToolsPanel vocabulary={vocabulary} conclusion={conclusion} onClose={() => setShowTools(false)} onGenerateVocab={handleGenerateVocab} onGenerateConclusion={handleGenerateConclusion} onGeneratePPT={handleGeneratePPT} isProcessing={isProcessing} onUpdateVocabItem={handleUpdateVocabItem} />}
+        {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
         {showAdmin && <AdminDashboard onClose={() => setShowAdmin(false)} />}
+        {showChat && segments.length > 0 && <ChatInterface segments={segments} onClose={() => setShowChat(false)} />}
       </main>
     </div>
   );

@@ -1,130 +1,283 @@
-import { GoogleGenAI, Type, Schema } from "@google/genai";
-import { PaperAnalysisResult, SegmentType, TranslationTone, VocabularyItem, ConclusionSummary, PaperSegment } from "../types";
 
-// Helper to get client (assumes API_KEY is set in environment)
+import { GoogleGenAI, Type, Schema } from "@google/genai";
+import { PaperAnalysisResult, SegmentType, TranslationTone, VocabularyItem, ConclusionSummary, PaperSegment, ExtractedFigure, AISettings, ChatMessage, PaperMetadata } from "../types";
+import { cropImageFromCanvas, PageImage } from "./fileHelper";
+
+const SETTINGS_KEY = 'scholar_ai_settings_v2';
+// CHANGED: Default to Flash for speed as requested
+const DEFAULT_TEXT_MODEL = 'gemini-3-flash-preview'; 
+const DEFAULT_IMAGE_MODEL = 'gemini-2.5-flash-image'; 
+
+export const getStoredSettings = (): AISettings => {
+  const saved = localStorage.getItem(SETTINGS_KEY);
+  if (saved) {
+    const parsed = JSON.parse(saved);
+    return {
+        activeProvider: parsed.activeProvider || 'gemini',
+        apiKey: parsed.apiKey || '',
+        textModel: parsed.textModel || DEFAULT_TEXT_MODEL,
+        imageModel: parsed.imageModel || DEFAULT_IMAGE_MODEL,
+        externalProviderName: parsed.externalProviderName || 'ChatGPT',
+        externalApiKey: parsed.externalApiKey || '',
+        externalModel: parsed.externalModel || 'gpt-4o'
+    };
+  }
+  return {
+    activeProvider: 'gemini',
+    apiKey: '',
+    textModel: DEFAULT_TEXT_MODEL,
+    imageModel: DEFAULT_IMAGE_MODEL,
+    externalProviderName: 'ChatGPT',
+    externalApiKey: '',
+    externalModel: 'gpt-4o'
+  };
+};
+
+export const saveSettings = (settings: AISettings) => {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+};
+
 const getAiClient = () => {
-  const apiKey = process.env.API_KEY;
+  const settings = getStoredSettings();
+  const apiKey = settings.apiKey || process.env.API_KEY;
   if (!apiKey) {
-    throw new Error("API Key not found. Please set REACT_APP_API_KEY or process.env.API_KEY");
+    throw new Error("API Key not found. Please set settings or environment variable.");
   }
   return new GoogleGenAI({ apiKey });
 };
 
-export const analyzePdf = async (
-  base64Pdf: string, 
-  tone: TranslationTone,
-  pageRange?: string
-): Promise<PaperAnalysisResult> => {
+// 1. Analyze Metadata
+export const analyzePaperMetadata = async (firstPageBase64: string): Promise<PaperMetadata> => {
   const ai = getAiClient();
+  const settings = getStoredSettings();
+  
+  const prompt = `Extract metadata. JSON: title, authors, year, journal, volumeIssue, pages, doi.`;
   
   const responseSchema: Schema = {
     type: Type.OBJECT,
     properties: {
-      metadata: {
-        type: Type.OBJECT,
-        properties: {
-          title: { type: Type.STRING },
-          authors: { type: Type.ARRAY, items: { type: Type.STRING } },
-          year: { type: Type.STRING },
-          journal: { type: Type.STRING },
-          volumeIssue: { type: Type.STRING },
-          pages: { type: Type.STRING },
-          doi: { type: Type.STRING }
-        },
-        required: ["title", "authors", "year"]
-      },
-      segments: {
-        type: Type.ARRAY,
-        items: {
-          type: Type.OBJECT,
-          properties: {
-            id: { type: Type.STRING },
-            type: { type: Type.STRING, enum: [SegmentType.TEXT, SegmentType.HEADING, SegmentType.FIGURE_CAPTION, SegmentType.EQUATION, SegmentType.TABLE] },
-            original: { type: Type.STRING },
-            translated: { type: Type.STRING },
-            citations: { type: Type.ARRAY, items: { type: Type.STRING } },
-            description: { type: Type.STRING, description: "Detailed AI explanation for figures" }
-          },
-          required: ["id", "type", "original", "translated"]
-        }
-      }
+        title: { type: Type.STRING },
+        authors: { type: Type.ARRAY, items: { type: Type.STRING } },
+        year: { type: Type.STRING },
+        journal: { type: Type.STRING },
+        volumeIssue: { type: Type.STRING },
+        pages: { type: Type.STRING },
+        doi: { type: Type.STRING }
     },
-    required: ["metadata", "segments"]
+    required: ["title", "authors", "year"]
   };
 
-  const toneInstruction = tone === TranslationTone.ACADEMIC 
-    ? "Translate body text using formal academic Korean (~이다). However, for **Headings, Titles, or short labels**, use **Noun endings** (e.g., '결론' NOT '결론이다', '연구 방법' NOT '연구 방법이다')." 
-    : "Translate using an easy, explanatory Korean style.";
+  try {
+      const response = await ai.models.generateContent({
+          model: settings.textModel,
+          contents: {
+              parts: [
+                  { inlineData: { mimeType: 'image/jpeg', data: firstPageBase64 } },
+                  { text: prompt }
+              ]
+          },
+          config: { responseMimeType: "application/json", responseSchema: responseSchema }
+      });
+      return JSON.parse(response.text || "{}");
+  } catch (e) {
+      console.warn("Metadata extraction failed", e);
+      return { title: "Unknown Paper", authors: [], year: "", journal: "" };
+  }
+};
 
-  let prompt = `
-    Analyze the provided PDF academic paper. To improve speed, process only the visible text efficiently.
-    
-    Part 1: Metadata
-    Extract the paper's metadata (Title, Authors, Year, Journal Name, Vol/Issue, Pages, DOI).
+// 2. Analyze Content Page by Page (Fixed Schema Robustness)
+export const analyzePageContent = async (
+    pageImageBase64: string, 
+    pageIndex: number, 
+    tone: TranslationTone
+): Promise<PaperSegment[]> => {
+    const ai = getAiClient();
+    const settings = getStoredSettings();
 
-    Part 2: Content Segmentation
-    1. Break the text into logical segments (Headings, Paragraphs, Equations, Tables).
-    2. **Translation Rules (CRITICAL)**: 
-       - ${toneInstruction}
-       - **Sentence vs Heading**: If the segment is a Heading (e.g., "4. Conclusion"), translate as "4. 결론". Do NOT add "이다" to headings. Only use "이다" for full sentences.
-    
-    3. **Structure & Formatting Rules (STRICT)**:
-       - **Equations / Code / Syntax**: If you see lists of equations or code (e.g., R syntax like "ATT =~ ...", "model <- ...", or math formulas), you **MUST INSERT NEWLINE CHARACTERS (\\n)** to separate each line. Do NOT return a single long string.
-         - Example: "ATT =~ a + b \n SN =~ c + d"
-       - **Tables**: If you see a table in the PDF:
-         - Set type to 'table'.
-         - **ORIGINAL Field**: Do NOT just copy the raw text. You MUST reformat the original text into a **valid Markdown Table** with pipes (|) and a delimiter row (|---|).
-         - **TRANSLATED Field**: Translate the content inside the Markdown Table structure.
+    const toneInstruction = tone === TranslationTone.ACADEMIC 
+    ? "Translate using formal academic Korean (~이다). Use specialized terminology. Headings use Noun endings (e.g., '서론')." 
+    : "Translate using easy, explanatory Korean style (~해요).";
 
-    4. Extract citations like "(Smith, 2020)" into the citations array.
+    const prompt = `
+      You are an expert academic paper parser.
+      Task: Analyze Page ${pageIndex + 1}.
+
+      **CRITICAL READING ORDER**:
+      1. This is a multi-column academic paper.
+      2. You MUST read the **LEFT COLUMN** completely from top to bottom first.
+      3. Then read the **RIGHT COLUMN** from top to bottom.
+      4. DO NOT jump between columns. Follow the natural reading flow.
+
+      **Content Extraction Rules**:
+
+      1. **CODE & PROGRAM OUTPUTS** (Type: 'code'):
+         - Extract source code blocks.
+         - **CRITICAL**: Preserve ALL comments exactly (lines starting with #, //). DO NOT remove lines like "# using default...".
+         - **CRITICAL**: Treat Program Outputs, Model Fit Statistics, Loglikelihood lists, or mono-spaced logs as 'code'. 
+         - **NEGATIVE CONSTRAINT**: Do NOT treat program outputs/logs as 'table'.
+
+      2. **FIGURE CAPTIONS** (Type: 'figure_caption'):
+         - Extract lines starting with "Figure X", "Fig. X".
+         - Include the full caption text (e.g., "Figure 3. Theory of Planned behaviour.").
+         - Place them exactly where they appear in the flow.
+
+      3. **TABLES** (Type: 'table'):
+         - Only treat explicit data grids labeled as "Table X" as tables.
+         - **CRITICAL**: Include the Table Title (e.g., "Table 1. Estimates...") in the 'original' text or as a separate 'text' segment before the table.
+         - Convert table body to Markdown format.
+
+      4. **TEXT & OTHERS**:
+         - **heading**: Section titles (Intro, Methods...).
+         - **abstract**: The abstract block.
+         - **text**: Normal body paragraphs.
+         - **equation**: Math formulas (LaTeX syntax).
+         - **reference**: Bibliography items.
+
+      **Translation**:
+      - ${toneInstruction}
+      - Do NOT translate Code, Program Outputs, or Variable names.
+      - Translate Figure Captions and Table Titles.
+      
+      Output JSON 'segments'. Each segment:
+      - id: unique string
+      - type: string (text, heading, abstract, figure_caption, equation, table, code)
+      - original: extracted source text (English)
+      - translated: Korean translation
+      - citations: array of extracted citation strings
+    `;
+
+    // Relaxed Schema: 'type' is STRING to prevent enum validation crashes if model hallucinates a type
+    const responseSchema: Schema = {
+        type: Type.OBJECT,
+        properties: {
+            segments: {
+                type: Type.ARRAY,
+                items: {
+                    type: Type.OBJECT,
+                    properties: {
+                        id: { type: Type.STRING },
+                        type: { type: Type.STRING }, 
+                        original: { type: Type.STRING },
+                        translated: { type: Type.STRING },
+                        citations: { type: Type.ARRAY, items: { type: Type.STRING } }
+                    },
+                    required: ["type", "original", "translated"]
+                }
+            }
+        }
+    };
+
+    try {
+        const response = await ai.models.generateContent({
+            model: settings.textModel,
+            contents: {
+                parts: [
+                    { inlineData: { mimeType: 'image/jpeg', data: pageImageBase64 } },
+                    { text: prompt }
+                ]
+            },
+            config: { responseMimeType: "application/json", responseSchema: responseSchema }
+        });
+        
+        let result;
+        try {
+            let rawText = response.text || "{}";
+            rawText = rawText.replace(/```json/g, '').replace(/```/g, '');
+            result = JSON.parse(rawText);
+        } catch (parseError) {
+            console.error("JSON Parse Error", parseError);
+            throw new Error("Failed to parse AI response");
+        }
+
+        return (result.segments || []).map((s: any, idx: number) => ({
+            ...s,
+            id: `pg${pageIndex}_${idx}_${Date.now()}`,
+            pageIndex: pageIndex + 1, // Store 1-based page index
+            type: validateSegmentType(s.type)
+        }));
+    } catch (e) {
+        console.error(`Error analyzing page ${pageIndex}:`, e);
+        return [{
+            id: `err_${pageIndex}`,
+            pageIndex: pageIndex + 1,
+            type: SegmentType.TEXT,
+            original: `[Error processing Page ${pageIndex + 1}]`,
+            translated: `[페이지 ${pageIndex + 1} 처리 중 오류가 발생했습니다. 재시도 해주세요.]`,
+            citations: []
+        }];
+    }
+};
+
+const validateSegmentType = (typeStr: string): SegmentType => {
+    const t = typeStr.toLowerCase();
+    if (t.includes('head')) return SegmentType.HEADING;
+    if (t.includes('abstract')) return SegmentType.ABSTRACT;
+    if (t.includes('fig') || t.includes('cap')) return SegmentType.FIGURE_CAPTION;
+    if (t.includes('eq') || t.includes('math')) return SegmentType.EQUATION;
+    if (t.includes('tab')) return SegmentType.TABLE;
+    if (t.includes('code')) return SegmentType.CODE;
+    return SegmentType.TEXT;
+};
+
+// ... (Rest of the functions remain the same)
+export const analyzePdf = async (base64Pdf: string, tone: TranslationTone): Promise<PaperAnalysisResult> => {
+   throw new Error("Please use page-by-page analysis (analyzePageContent) for full documents.");
+};
+
+export const explainBlockContent = async (originalText: string, translatedText: string, userPrompt?: string): Promise<{korean: string, english: string}> => {
+  const ai = getAiClient();
+  const settings = getStoredSettings();
+  
+  let promptText = `
+    You are a professor explaining an academic paper.
+    Original Text: "${originalText}"
     
-    Return the result as a single JSON object containing 'metadata' and 'segments'.
+    Provide a detailed explanation. If it's code/math, explain the syntax/variables.
+    Output format: JSON { "korean": "...", "english": "..." }
   `;
 
-  if (pageRange) {
-    prompt += `
-    IMPORTANT: Focus ONLY on the content found on page(s) ${pageRange}. Do NOT translate the entire document.
-    However, try to find metadata (title/author) from the first page even if the range is different, or return generic metadata if not found.
-    `;
+  if (userPrompt) {
+      promptText = `
+        You are an helpful academic tutor.
+        User Question: "${userPrompt}"
+        
+        Context (Original): "${originalText}"
+        Context (Translated): "${translatedText}"
+        
+        Answer the question based on the context.
+        Output format: JSON { "korean": "...", "english": "..." }
+      `;
   }
 
-  try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: {
-        parts: [
-          { inlineData: { mimeType: 'application/pdf', data: base64Pdf } },
-          { text: prompt }
-        ]
-      },
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: responseSchema,
-      }
-    });
+  const responseSchema: Schema = {
+    type: Type.OBJECT,
+    properties: {
+      korean: { type: Type.STRING },
+      english: { type: Type.STRING }
+    },
+    required: ["korean", "english"]
+  };
 
-    const text = response.text;
-    if (!text) throw new Error("No response from AI");
-    
-    const parsed = JSON.parse(text) as PaperAnalysisResult;
-    return parsed;
-  } catch (error) {
-    console.error("Error analyzing PDF:", error);
-    throw error;
-  }
+  const response = await ai.models.generateContent({
+    model: settings.textModel,
+    contents: { text: promptText },
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: responseSchema
+    }
+  });
+
+  const text = response.text;
+  if (!text) return { korean: "Error", english: "Error" };
+  return JSON.parse(text);
 };
 
 export const extractVocabulary = async (segments: PaperSegment[]): Promise<VocabularyItem[]> => {
   const ai = getAiClient();
+  const settings = getStoredSettings();
   const contextText = segments.map(s => s.original).join("\n").slice(0, 30000); 
 
-  const prompt = `
-    Based on the following academic text, extract 5-10 key academic terms.
-    For each term:
-    1. Term (English).
-    2. Definition (Korean, Graduate level).
-    3. Context sentence from text.
-  `;
+  const prompt = `Extract 5-10 key academic terms with definitions (Korean) and context.`;
 
   const responseSchema: Schema = {
     type: Type.ARRAY,
@@ -140,7 +293,7 @@ export const extractVocabulary = async (segments: PaperSegment[]): Promise<Vocab
   };
 
   const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
+    model: settings.textModel, 
     contents: [{ text: contextText }, { text: prompt }],
     config: {
       responseMimeType: "application/json",
@@ -154,50 +307,29 @@ export const extractVocabulary = async (segments: PaperSegment[]): Promise<Vocab
 
 export const explainTermWithGrounding = async (term: string): Promise<string> => {
   const ai = getAiClient();
-  
-  const prompt = `
-    Explain the academic term "${term}" in Korean for a graduate student.
-    Use academic sources to define it. 
-    Include citations if possible.
-  `;
+  const settings = getStoredSettings();
+  const prompt = `Explain "${term}" in Korean for a graduate student with academic sources.`;
 
   const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
+    model: settings.textModel,
     contents: prompt,
-    config: {
-      tools: [{ googleSearch: {} }] 
-    }
+    config: { tools: [{ googleSearch: {} }] }
   });
 
   let content = response.text || "설명을 찾을 수 없습니다.";
-  
   const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
   if (chunks) {
-    const links = chunks
-      .map((c: any) => c.web?.uri ? `[source](${c.web.uri})` : null)
-      .filter(Boolean)
-      .join(', ');
-    if (links) {
-      content += `\n\n참고자료: ${links}`;
-    }
+    const links = chunks.map((c: any) => c.web?.uri ? `[source](${c.web.uri})` : null).filter(Boolean).join(', ');
+    if (links) content += `\n\n참고자료: ${links}`;
   }
-
   return content;
 };
 
 export const generateConclusion = async (segments: PaperSegment[]): Promise<ConclusionSummary> => {
   const ai = getAiClient();
+  const settings = getStoredSettings();
   const contextText = segments.map(s => s.original).join("\n").slice(0, 50000); 
-
-  const prompt = `
-    Summarize the conclusion of this paper in Korean using the text provided.
-    Identify:
-    1. Research Questions (연구 문제)
-    2. Key Results (주요 연구 결과) - Describe findings clearly.
-    3. Implications/Significance (시사점 및 의의)
-    
-    Tone: Academic (~이다).
-  `;
+  const prompt = `Summarize conclusion: Research Questions, Key Results, Implications. Tone: Academic.`;
 
   const responseSchema: Schema = {
     type: Type.OBJECT,
@@ -209,12 +341,9 @@ export const generateConclusion = async (segments: PaperSegment[]): Promise<Conc
   };
 
   const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
+    model: settings.textModel,
     contents: [{ text: contextText }, { text: prompt }],
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: responseSchema
-    }
+    config: { responseMimeType: "application/json", responseSchema: responseSchema }
   });
 
   const text = response.text;
@@ -222,18 +351,84 @@ export const generateConclusion = async (segments: PaperSegment[]): Promise<Conc
   return JSON.parse(text);
 };
 
-export const findReferenceDetails = async (citation: string, fullTextContext: string): Promise<string> => {
+export const generatePresentationScript = async (segments: PaperSegment[]): Promise<string> => {
   const ai = getAiClient();
+  const settings = getStoredSettings();
+  const contextText = segments.map(s => `[${s.type}] ${s.original}`).join("\n").slice(0, 50000);
+  
   const prompt = `
-    Find the full bibliographic reference for the citation "${citation}" in the provided text.
-    Return just the full string of the reference (Author, Title, Year, Journal, etc.).
-    If not found, return "Reference details not found in text."
+    Based on the provided academic paper content, create a presentation script for a PPT.
+    
+    Structure the output as follows for each slide:
+    ---
+    ## Slide [Number]: [Title]
+    **Key Points (Bullet Points):**
+    - [Point 1]
+    - [Point 2]
+    
+    **Speaker Notes (Script for the presenter):**
+    [Natural, engaging script in Korean ~입니다/합니다 style explaining the slide content]
+    ---
+    
+    Cover: Title, Intro, Methodology, Key Results, Discussion, Conclusion.
   `;
 
   const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
-    contents: [{ text: `Text Context: ${fullTextContext.slice(-20000)}` }, { text: prompt }] 
+    model: settings.textModel,
+    contents: [{ text: contextText }, { text: prompt }]
   });
 
+  return response.text || "Failed to generate script.";
+};
+
+export const findReferenceDetails = async (citation: string, fullTextContext: string): Promise<string> => {
+  const ai = getAiClient();
+  const settings = getStoredSettings();
+  const prompt = `Find full bibliographic reference for "${citation}" in text. Return only the string.`;
+  const response = await ai.models.generateContent({
+    model: settings.textModel,
+    contents: [{ text: `Context: ${fullTextContext.slice(-20000)}` }, { text: prompt }] 
+  });
   return response.text || "";
+};
+
+export const chatWithPaper = async (history: ChatMessage[], newMessage: string, segments: PaperSegment[]): Promise<string> => {
+    const ai = getAiClient();
+    const settings = getStoredSettings();
+    
+    const context = segments.slice(0, 200).map(s => s.original).join('\n').slice(0, 30000);
+    
+    const systemInstruction = `
+      You are an academic assistant helping a user understand a research paper.
+      Answer questions based on the provided PAPER CONTEXT.
+      
+      PAPER CONTEXT:
+      ${context}
+    `;
+
+    // Construct contents from history + new message
+    const contents = history.map(msg => {
+       const parts: any[] = [{ text: msg.text }];
+       if (msg.attachment) {
+           parts.unshift({
+               inlineData: {
+                   mimeType: msg.attachment.mimeType,
+                   data: msg.attachment.data
+               }
+           });
+       }
+       return { role: msg.role, parts };
+    });
+
+    if (newMessage && newMessage.trim() !== '') {
+        contents.push({ role: 'user', parts: [{ text: newMessage }] });
+    }
+
+    const response = await ai.models.generateContent({
+        model: settings.textModel,
+        config: { systemInstruction },
+        contents: contents
+    });
+
+    return response.text || "No response.";
 };

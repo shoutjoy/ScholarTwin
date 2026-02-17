@@ -7,9 +7,11 @@ export enum TranslationTone {
 export enum SegmentType {
   TEXT = 'text',
   HEADING = 'heading',
+  ABSTRACT = 'abstract', // Added for specific academic section styling
   FIGURE_CAPTION = 'figure_caption',
   EQUATION = 'equation',
-  TABLE = 'table'
+  TABLE = 'table',
+  CODE = 'code' 
 }
 
 export interface PaperMetadata {
@@ -29,17 +31,34 @@ export interface PaperAnalysisResult {
 
 export interface PaperSegment {
   id: string;
+  pageIndex: number; // Added: Track which page this belongs to
   type: SegmentType;
   original: string;
   translated: string;
-  citations?: string[]; // Detected citations like (Author, 2023)
-  description?: string; // AI generated description for figures
+  citations?: string[]; 
+  // Dual language explanations
+  explanation?: string; // Korean
+  explanationEn?: string; // English
+  isExplaining?: boolean; // Loading state
+  
+  // User Interactions
+  isBookmarked?: boolean;
+  userNote?: string;
+}
+
+export interface ExtractedFigure {
+  id: string;
+  pageIndex: number;
+  base64: string; 
+  title: string; 
+  aiExplanation?: string; 
 }
 
 export interface VocabularyItem {
   term: string;
   definition: string;
   context: string;
+  aiExplanation?: string; // Persisted explanation
 }
 
 export interface ConclusionSummary {
@@ -57,14 +76,13 @@ export interface ReferenceLink {
 export interface ProcessingState {
   isUploading: boolean;
   isProcessing: boolean;
-  progress: number; // 0-100
+  progress: number; 
   error: string | null;
 }
 
-// Auth Types
 export interface User {
-  id: string; // email as id
-  password?: string; // optional for google auth
+  id: string; 
+  password?: string; 
   name: string;
   phone?: string;
   isPaid: boolean;
@@ -76,4 +94,30 @@ export interface User {
 export interface AuthState {
   user: User | null;
   isAuthenticated: boolean;
+}
+
+export type AIProvider = 'gemini' | 'external';
+
+export interface AISettings {
+  activeProvider: AIProvider;
+  
+  // Gemini Specific
+  apiKey: string; 
+  textModel: string; // e.g., gemini-3-pro-preview
+  imageModel: string; // e.g., gemini-2.5-flash-image (Nano Banana)
+
+  // External (e.g., ChatGPT)
+  externalProviderName: string; // 'ChatGPT', 'Claude'
+  externalApiKey: string;
+  externalModel: string;
+}
+
+export interface ChatMessage {
+  role: 'user' | 'model';
+  text: string;
+  attachment?: {
+    mimeType: string;
+    data: string; // base64
+    name: string;
+  };
 }
