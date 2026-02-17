@@ -3,7 +3,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import ReactDOM from 'react-dom';
 import * as pdfjsLib from 'pdfjs-dist';
 
-// Ensure worker is set (re-using logic from fileHelper but locally to be safe in component lifecycle)
+// Ensure worker is set
 const pdfjs = (pdfjsLib as any).default || pdfjsLib;
 pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js`;
 
@@ -19,14 +19,14 @@ const ExternalPdfViewer: React.FC<ExternalPdfViewerProps> = ({ pdfUrl, onClose, 
 
   // 1. Open Window on Mount
   useEffect(() => {
-    const width = 800;
-    const height = window.screen.availHeight * 0.8;
-    const left = window.screen.availWidth - width - 50; // Position on the right usually
+    const width = 1000;
+    const height = window.screen.availHeight * 0.9;
+    const left = window.screen.availWidth - width - 20; 
     
     const newWindow = window.open(
       '', 
       'ScholarTwinPDFViewer', 
-      `width=${width},height=${height},left=${left},top=100,resizable=yes,scrollbars=yes`
+      `width=${width},height=${height},left=${left},top=50,resizable=yes,scrollbars=yes`
     );
 
     if (newWindow) {
@@ -37,6 +37,9 @@ const ExternalPdfViewer: React.FC<ExternalPdfViewerProps> = ({ pdfUrl, onClose, 
       newWindow.document.body.style.margin = "0";
       newWindow.document.body.style.backgroundColor = "#525659"; // Acrobat Reader dark gray style
       newWindow.document.body.style.overflowY = "auto"; 
+      
+      // Reset body content to ensure clean state on reload
+      newWindow.document.body.innerHTML = '';
 
       // Create Container
       const container = newWindow.document.createElement('div');
@@ -44,7 +47,8 @@ const ExternalPdfViewer: React.FC<ExternalPdfViewerProps> = ({ pdfUrl, onClose, 
       container.style.flexDirection = "column";
       container.style.alignItems = "center";
       container.style.padding = "20px";
-      container.style.gap = "20px";
+      container.style.gap = "10px";
+      container.id = "pdf-root";
       newWindow.document.body.appendChild(container);
       
       setContainerEl(container);
@@ -52,7 +56,7 @@ const ExternalPdfViewer: React.FC<ExternalPdfViewerProps> = ({ pdfUrl, onClose, 
       // Handle Close
       newWindow.onbeforeunload = () => {
         onClose();
-        return null;
+        return null; // Some browsers need this
       };
 
       // Add Styles
@@ -63,6 +67,7 @@ const ExternalPdfViewer: React.FC<ExternalPdfViewerProps> = ({ pdfUrl, onClose, 
         ::-webkit-scrollbar-thumb { background: #888; border-radius: 5px; }
         ::-webkit-scrollbar-thumb:hover { background: #aaa; }
         body { font-family: sans-serif; }
+        canvas { box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
       `;
       newWindow.document.head.appendChild(style);
     } else {
@@ -71,6 +76,8 @@ const ExternalPdfViewer: React.FC<ExternalPdfViewerProps> = ({ pdfUrl, onClose, 
     }
 
     return () => {
+      // Optional: Close window on unmount? 
+      // Usually better to keep it open if user navigates, but here we sync lifecycle.
       if (externalWindowRef.current) {
         externalWindowRef.current.close();
       }
@@ -89,7 +96,7 @@ const ExternalPdfViewer: React.FC<ExternalPdfViewerProps> = ({ pdfUrl, onClose, 
       
       win.scrollTo({
           top: scrollTo,
-          behavior: 'smooth'
+          behavior: 'auto' // Use auto for instant sync to avoid laggy feeling
       });
     }
   }, [scrollPercentage]);
@@ -113,7 +120,14 @@ const PdfRenderer: React.FC<{ pdfUrl: string }> = ({ pdfUrl }) => {
     useEffect(() => {
         const loadPdf = async () => {
             try {
-                const loadingTask = pdfjs.getDocument(pdfUrl);
+                // FIX: Add disableFontFace to prevent font rendering issues across windows
+                const loadingTask = pdfjs.getDocument({
+                    url: pdfUrl,
+                    cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/',
+                    cMapPacked: true,
+                    standardFontDataUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/standard_fonts/',
+                    disableFontFace: true // CRITICAL FIX for "Garbled text in new window"
+                });
                 const pdf = await loadingTask.promise;
                 setPdfDoc(pdf);
                 setNumPages(pdf.numPages);
@@ -126,7 +140,7 @@ const PdfRenderer: React.FC<{ pdfUrl: string }> = ({ pdfUrl }) => {
         loadPdf();
     }, [pdfUrl]);
 
-    // 2. Render Pages when numPages and pdfDoc are available
+    // 2. Render Pages
     useEffect(() => {
         if (!pdfDoc || numPages === 0) return;
 
@@ -134,11 +148,10 @@ const PdfRenderer: React.FC<{ pdfUrl: string }> = ({ pdfUrl }) => {
             for (let i = 1; i <= numPages; i++) {
                 const canvas = canvasRefs.current[i-1];
                 if (canvas) {
-                    // Check if already rendered to avoid double render if this effect runs again
                     if (canvas.getAttribute('data-rendered') === 'true') continue;
 
                     const page = await pdfDoc.getPage(i);
-                    const viewport = page.getViewport({ scale: 1.5 }); // Good quality scale
+                    const viewport = page.getViewport({ scale: 1.5 });
                     
                     const context = canvas.getContext('2d');
                     if (context) {
@@ -147,7 +160,6 @@ const PdfRenderer: React.FC<{ pdfUrl: string }> = ({ pdfUrl }) => {
                         canvas.style.width = "100%";
                         canvas.style.maxWidth = "100%";
                         canvas.style.height = "auto";
-                        canvas.style.boxShadow = "0 4px 6px rgba(0,0,0,0.3)";
                         
                         await page.render({
                             canvasContext: context,
@@ -171,7 +183,7 @@ const PdfRenderer: React.FC<{ pdfUrl: string }> = ({ pdfUrl }) => {
                      />
                 </div>
             ))}
-            {numPages === 0 && <div style={{color: 'white'}}>Loading PDF...</div>}
+            {numPages === 0 && <div style={{color: 'white', marginTop: '20px'}}>Loading PDF...</div>}
         </>
     );
 }

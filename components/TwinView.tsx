@@ -1,11 +1,16 @@
 
-import React, { useRef, useState, useMemo } from 'react';
+import React, { useRef, useState, useMemo, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import rehypeRaw from 'rehype-raw';
+import * as pdfjsLib from 'pdfjs-dist';
 import { PaperSegment, SegmentType } from '../types';
+
+// Ensure worker is set for internal viewer as well
+const pdfjs = (pdfjsLib as any).default || pdfjsLib;
+pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js`;
 
 // Error Boundary for Markdown Content
 class MarkdownErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }> {
@@ -398,6 +403,79 @@ const FigureList: React.FC<{
     );
 };
 
+// Internal PDF Renderer component for TwinView
+const InternalPdfRenderer: React.FC<{ pdfUrl: string }> = ({ pdfUrl }) => {
+    const [pdfDoc, setPdfDoc] = useState<any>(null);
+    const [numPages, setNumPages] = useState(0);
+    const canvasRefs = useRef<(HTMLCanvasElement | null)[]>([]);
+
+    useEffect(() => {
+        const loadPdf = async () => {
+            try {
+                const loadingTask = pdfjs.getDocument({
+                    url: pdfUrl,
+                    cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/',
+                    cMapPacked: true,
+                    standardFontDataUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/standard_fonts/'
+                });
+                const pdf = await loadingTask.promise;
+                setPdfDoc(pdf);
+                setNumPages(pdf.numPages);
+                canvasRefs.current = new Array(pdf.numPages).fill(null);
+            } catch (error) {
+                console.error("Internal PDF load failed", error);
+            }
+        };
+        if (pdfUrl) loadPdf();
+    }, [pdfUrl]);
+
+    useEffect(() => {
+        if (!pdfDoc || numPages === 0) return;
+
+        const renderPages = async () => {
+            for (let i = 1; i <= numPages; i++) {
+                const canvas = canvasRefs.current[i-1];
+                if (canvas) {
+                    if (canvas.getAttribute('data-rendered') === 'true') continue;
+
+                    const page = await pdfDoc.getPage(i);
+                    // Use standard scale for internal view (1.2-1.5 usually good for reading)
+                    const viewport = page.getViewport({ scale: 1.2 });
+                    
+                    const context = canvas.getContext('2d');
+                    if (context) {
+                        canvas.height = viewport.height;
+                        canvas.width = viewport.width;
+                        canvas.style.width = "100%";
+                        canvas.style.height = "auto";
+                        
+                        await page.render({
+                            canvasContext: context,
+                            viewport: viewport
+                        }).promise;
+                        
+                        canvas.setAttribute('data-rendered', 'true');
+                    }
+                }
+            }
+        };
+        renderPages();
+    }, [pdfDoc, numPages]);
+
+    return (
+        <div className="flex flex-col items-center bg-gray-500 py-4 gap-4 min-h-full">
+            {Array.from({ length: numPages }, (_, i) => (
+                <div key={i} className="bg-white shadow-lg" style={{ width: '90%', maxWidth: '800px' }}>
+                     <canvas 
+                        ref={(el) => { canvasRefs.current[i] = el; }} 
+                     />
+                </div>
+            ))}
+            {numPages === 0 && <div className="text-white mt-10">Loading PDF Document...</div>}
+        </div>
+    );
+};
+
 const TwinView: React.FC<TwinViewProps & { onToggleBookmark: (id: string) => void; onUpdateNote: (id: string, note: string) => void; onSyncScroll: (percentage: number) => void; onRetranslatePage?: (pageIndex: number) => void; onLoadNextBatch?: () => void; }> = ({ 
   segments, 
   highlightedId, 
@@ -436,7 +514,8 @@ const TwinView: React.FC<TwinViewProps & { onToggleBookmark: (id: string) => voi
   const maxPageLoaded = sortedPageKeys.length > 0 ? Math.max(...sortedPageKeys) : 0;
 
   const handleScroll = (source: 'left' | 'right') => {
-    if (viewMode !== 'text' && source === 'left') return;
+    // Enable sync for both text and PDF mode when scrolling left
+    if (viewMode !== 'text' && viewMode !== 'pdf' && source === 'left') return;
     if (isSyncing.current) return;
     
     const left = leftRef.current;
@@ -450,17 +529,14 @@ const TwinView: React.FC<TwinViewProps & { onToggleBookmark: (id: string) => voi
          if (!isNaN(percentage)) {
              onSyncScroll(percentage);
          }
+         // Sync left scroll position based on right
+         left.scrollTop = percentage * (left.scrollHeight - left.clientHeight);
     }
 
     if (source === 'left') {
       const percentage = left.scrollTop / (left.scrollHeight - left.clientHeight);
       right.scrollTop = percentage * (right.scrollHeight - right.clientHeight);
-    } else {
-      if (viewMode === 'text') {
-        const percentage = right.scrollTop / (right.scrollHeight - right.clientHeight);
-        left.scrollTop = percentage * (left.scrollHeight - left.clientHeight);
-      }
-    }
+    } 
 
     setTimeout(() => {
       isSyncing.current = false;
@@ -566,11 +642,7 @@ const TwinView: React.FC<TwinViewProps & { onToggleBookmark: (id: string) => voi
             {viewMode === 'pdf' && (
               <div className="w-full h-full bg-gray-200">
                 {pdfUrl ? (
-                  <object data={pdfUrl} type="application/pdf" className="w-full h-full">
-                    <div className="flex flex-col items-center justify-center h-full text-gray-500 p-8 text-center">
-                      <a href={pdfUrl} download className="text-primary-600 underline text-sm">Download PDF</a>
-                    </div>
-                  </object>
+                  <InternalPdfRenderer pdfUrl={pdfUrl} />
                 ) : <div className="p-8 text-center text-gray-400">PDF not available</div>}
               </div>
             )}

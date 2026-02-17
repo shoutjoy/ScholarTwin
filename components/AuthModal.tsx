@@ -58,12 +58,13 @@ const AuthModal: React.FC<AuthModalProps> = ({ onLoginSuccess }) => {
   };
 
   const handleGoogleLogin = () => {
-    // Directly call the mock login service which now guarantees success for testing
-    const result = authService.mockGoogleLogin();
+    // Uses the typed email or defaults to shoutjoy1@gmail.com
+    const result = authService.mockGoogleLogin(formData.email);
+    
     if (result.success && result.user) {
       onLoginSuccess(result.user);
     } else {
-      setError("Google Login failed unexpectedly.");
+      setError(result.message || "Google Login failed unexpectedly.");
     }
   };
 
@@ -109,7 +110,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ onLoginSuccess }) => {
               <input
                 type="text"
                 name="email"
-                placeholder={isLoginView ? "ID (e.g. shoutjoy1) or Email" : "Email address"}
+                placeholder={isLoginView ? "ID or Email" : "Email address"}
                 value={formData.email}
                 onChange={handleChange}
                 className="w-full px-4 py-2 bg-gray-700 border border-gray-600 text-white rounded-lg focus:ring-2 focus:ring-primary-500 outline-none placeholder-gray-400"
@@ -187,6 +188,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ onLoginSuccess }) => {
             <button
               onClick={handleGoogleLogin}
               className="mt-4 w-full py-2.5 border border-gray-300 rounded-lg flex items-center justify-center gap-2 hover:bg-gray-50 transition-all group"
+              title="Tip: Enter email above to simulate that user"
             >
               <svg className="w-5 h-5" viewBox="0 0 24 24">
                 <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
@@ -194,8 +196,13 @@ const AuthModal: React.FC<AuthModalProps> = ({ onLoginSuccess }) => {
                 <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
                 <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
               </svg>
-              <span className="text-gray-700 font-medium text-sm group-hover:text-primary-600">Sign in with Google (Demo)</span>
+              <span className="text-gray-700 font-medium text-sm group-hover:text-primary-600">
+                  {formData.email ? `Sign in as ${formData.email} (Mock)` : 'Sign in with Google (shoutjoy1)'}
+              </span>
             </button>
+            <p className="text-center text-xs text-gray-400 mt-2">
+                * Default Google User: shoutjoy1@gmail.com (Auto-approved)
+            </p>
           </div>
         </div>
       </div>

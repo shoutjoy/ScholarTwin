@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { TranslationTone, PaperSegment, VocabularyItem, ConclusionSummary, PaperMetadata, User, ExtractedFigure, PaperAnalysisResult } from './types';
 import { fileToBase64, downloadText, printTranslatedPdf, renderPdfPagesToImages, getPdfPageCount } from './services/fileHelper';
 import { analyzePaperMetadata, analyzePageContent, extractVocabulary, generateConclusion, findReferenceDetails, explainBlockContent, generatePresentationScript } from './services/geminiService';
@@ -33,7 +33,8 @@ const App: React.FC = () => {
   const [totalPages, setTotalPages] = useState<number>(0);
   
   const [isProcessing, setIsProcessing] = useState(false);
-  const [progress, setProgress] = useState(0); 
+  const [progress, setProgress] = useState(0);
+  const [processingStatus, setProcessingStatus] = useState<string>(''); 
   
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const [vocabulary, setVocabulary] = useState<VocabularyItem[]>([]);
@@ -49,6 +50,8 @@ const App: React.FC = () => {
   const [showPdfWindow, setShowPdfWindow] = useState(false);
   const [scrollSyncPercentage, setScrollSyncPercentage] = useState(0);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+
+  const abortRef = useRef(false);
 
   // Computed state for sidebar
   const processedPageIndices = useMemo(() => {
@@ -112,11 +115,18 @@ const App: React.FC = () => {
     setShowPdfWindow(false);
   };
 
+  const handleCancelProcessing = () => {
+      abortRef.current = true;
+  };
+
   const executeTranslation = async (startPage: number, endPage: number, isAppend: boolean = false) => {
     if (!selectedFile) return;
     try {
       setIsProcessing(true);
+      abortRef.current = false;
       setProgress(5); 
+      setProcessingStatus('Preparing PDF...');
+      
       if (!isAppend) setSegments([]); 
       
       let pageImages;
@@ -130,6 +140,8 @@ const App: React.FC = () => {
         return;
       }
 
+      if (abortRef.current) { setIsProcessing(false); return; }
+
       const pagesToProcess = pageImages.filter(p => p.pageIndex >= startPage && p.pageIndex <= endPage);
       
       if (pagesToProcess.length === 0) {
@@ -138,10 +150,11 @@ const App: React.FC = () => {
            return;
       }
       
-      setShowPdfWindow(true);
+      // NOTE: setShowPdfWindow(true) is now handled in handleTranslate to avoid popup blockers
 
       if (!metadata && !isAppend) {
           setProgress(10);
+          setProcessingStatus('Analyzing Metadata...');
           try {
             const meta = await analyzePaperMetadata(pageImages[0].base64);
             setMetadata(meta);
@@ -150,12 +163,20 @@ const App: React.FC = () => {
           }
       }
 
+      if (abortRef.current) { setIsProcessing(false); return; }
+
       for (let i = 0; i < pagesToProcess.length; i++) {
+          if (abortRef.current) break;
+
           const pageImg = pagesToProcess[i];
           const currentProgress = 10 + Math.round(((i + 1) / pagesToProcess.length) * 80);
           setProgress(currentProgress);
+          setProcessingStatus(`Processing Page ${pageImg.pageIndex} of ${endPage}...`);
 
           const pageSegments = await analyzePageContent(pageImg.base64, pageImg.pageIndex - 1, tone);
+          
+          if (abortRef.current) break;
+
           setSegments(prev => {
               const filtered = prev.filter(s => s.pageIndex !== pageImg.pageIndex);
               return [...filtered, ...pageSegments];
@@ -163,8 +184,8 @@ const App: React.FC = () => {
           setLastProcessedPage(Math.max(lastProcessedPage, pageImg.pageIndex));
       }
 
-      const newRangeStr = `${startPage}-${endPage}`;
-      setCurrentActiveRange(prev => isAppend ? `${prev}, ${newRangeStr}` : newRangeStr);
+      const newRangeStr = `${startPage}-${lastProcessedPage}`; // Update range to what was actually processed
+      setCurrentActiveRange(prev => isAppend ? (prev ? `${prev}, ${newRangeStr}` : newRangeStr) : newRangeStr);
       setProgress(100);
 
     } catch (error: any) {
@@ -173,6 +194,7 @@ const App: React.FC = () => {
       setProgress(0);
     } finally {
       setIsProcessing(false);
+      setProcessingStatus('');
     }
   };
 
@@ -183,8 +205,11 @@ const App: React.FC = () => {
   const handleTranslate = async (isFull: boolean) => {
     if (!selectedFile) return;
     
+    // IMPORTANT: Open the window immediately on user click to prevent browser popup blocking
+    setShowPdfWindow(true);
+    
     if (isFull) {
-        await executeTranslation(1, 9999, false);
+        await executeTranslation(1, totalPages || 9999, false);
     } else {
         let start = 1;
         let end = 2; // Default 2 pages
@@ -246,6 +271,7 @@ const App: React.FC = () => {
   const handleGenerateVocab = async () => {
     if (segments.length === 0) return;
     setIsProcessing(true);
+    setProcessingStatus('Extracting Vocabulary...');
     try {
       const vocab = await extractVocabulary(segments);
       setVocabulary(vocab);
@@ -253,6 +279,7 @@ const App: React.FC = () => {
       alert("Failed to generate vocabulary.");
     } finally {
       setIsProcessing(false);
+      setProcessingStatus('');
     }
   };
 
@@ -265,6 +292,7 @@ const App: React.FC = () => {
   const handleGenerateConclusion = async () => {
     if (segments.length === 0) return;
     setIsProcessing(true);
+    setProcessingStatus('Summarizing Conclusion...');
     try {
       const summary = await generateConclusion(segments);
       setConclusion(summary);
@@ -272,6 +300,7 @@ const App: React.FC = () => {
       alert("Failed to generate conclusion.");
     } finally {
       setIsProcessing(false);
+      setProcessingStatus('');
     }
   };
 
@@ -545,9 +574,42 @@ const App: React.FC = () => {
           <div className="flex-1 flex w-full max-w-7xl mx-auto shadow-xl bg-white overflow-hidden h-[calc(100vh-80px)] rounded-xl border border-gray-200">
             {segments.length === 0 ? (
               <div className="flex w-full h-full">
-                  <div className="w-1/2 bg-slate-100 border-r border-gray-200 hidden md:block relative">
-                      {pdfUrl && <object data={`${pdfUrl}#toolbar=0&navpanes=0`} type="application/pdf" className="w-full h-full"><div className="flex flex-col items-center justify-center h-full text-gray-400 p-10 text-center"><p>Preview not available in this browser.</p></div></object>}
-                      <div className="absolute top-4 left-4 bg-black/50 backdrop-blur text-white text-xs px-2 py-1 rounded">PDF Preview</div>
+                  <div className="w-1/2 bg-slate-100 border-r border-gray-200 hidden md:block relative group">
+                      {showPdfWindow ? (
+                          <div className="flex flex-col items-center justify-center h-full p-10 text-center bg-gray-200/50">
+                             <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-200 flex flex-col items-center animate-in fade-in zoom-in-95">
+                                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-12 h-12 text-indigo-500 mb-3">
+                                   <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+                                 </svg>
+                                 <h3 className="font-bold text-gray-800 text-lg">PDF is open in a separate window</h3>
+                                 <p className="text-gray-500 text-sm mt-1 mb-4">The PDF preview is synced with this dashboard.</p>
+                                 <button 
+                                   onClick={() => setShowPdfWindow(false)}
+                                   className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium rounded-lg transition-colors border border-gray-300"
+                                 >
+                                   Bring PDF Back Here
+                                 </button>
+                             </div>
+                          </div>
+                      ) : (
+                          <>
+                             {pdfUrl && <object data={`${pdfUrl}#toolbar=0&navpanes=0`} type="application/pdf" className="w-full h-full"><div className="flex flex-col items-center justify-center h-full text-gray-400 p-10 text-center"><p>Preview not available in this browser.</p></div></object>}
+                             <div className="absolute top-4 left-4 bg-black/50 backdrop-blur text-white text-xs px-2 py-1 rounded pointer-events-none">PDF Preview</div>
+                             
+                             {/* Overlay button to open new window manually */}
+                             <div className="absolute inset-0 bg-black/5 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
+                                <button 
+                                   onClick={() => setShowPdfWindow(true)}
+                                   className="bg-white text-gray-800 px-5 py-3 rounded-full shadow-lg font-bold flex items-center gap-2 pointer-events-auto hover:scale-105 transition-transform"
+                                >
+                                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5 text-indigo-600">
+                                     <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+                                   </svg>
+                                   Open Synced PDF Window
+                                </button>
+                             </div>
+                          </>
+                      )}
                   </div>
                   <div className="w-full md:w-1/2 bg-white flex flex-col overflow-y-auto">
                        <div className="flex-1 flex flex-col justify-center p-8 md:p-12 max-w-lg mx-auto w-full">
@@ -636,11 +698,18 @@ const App: React.FC = () => {
                  <div className="absolute top-0 left-0 w-16 h-16 rounded-full border-4 border-primary-600 border-t-transparent animate-spin"></div>
                </div>
                <h3 className="text-xl font-bold text-gray-800 mb-1">Analyzing & Translating</h3>
-               <p className="text-gray-500 text-center mb-6 text-sm">Processing Content...</p>
+               <p className="text-gray-500 text-center mb-6 text-sm">{processingStatus || "Processing Content..."}</p>
                <div className="w-full bg-gray-100 rounded-full h-3 overflow-hidden mb-2">
                  <div className="h-full bg-primary-600 rounded-full transition-all duration-300 ease-out" style={{ width: `${progress}%` }}></div>
                </div>
-               <p className="text-xs font-bold text-primary-600 text-right">{Math.round(progress)}%</p>
+               <p className="text-xs font-bold text-primary-600 text-right mb-4">{Math.round(progress)}%</p>
+               
+               <button 
+                  onClick={handleCancelProcessing}
+                  className="px-4 py-2 border border-red-300 text-red-600 rounded-lg hover:bg-red-50 text-sm font-medium w-full transition-colors"
+               >
+                   Stop Processing
+               </button>
              </div>
           </div>
         )}
@@ -648,7 +717,7 @@ const App: React.FC = () => {
         {isProcessing && segments.length > 0 && (
              <div className="absolute top-20 right-8 z-50 bg-white shadow-lg border border-gray-200 rounded-full px-4 py-2 flex items-center gap-3 animate-pulse">
                   <div className="w-4 h-4 border-2 border-primary-600 border-t-transparent rounded-full animate-spin"></div>
-                  <span className="text-xs font-bold text-gray-700">Loading Next Pages...</span>
+                  <span className="text-xs font-bold text-gray-700">{processingStatus || "Loading..."}</span>
              </div>
         )}
 
