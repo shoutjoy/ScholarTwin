@@ -192,6 +192,8 @@ const App: React.FC = () => {
       return;
     }
     if (isRestoringSnapshotRef.current) return;
+    // 원문번역 뷰에 들어온 경우에만 블록화 확인을 띄움 (미리보기에서 뜨면, 확인/취소 후 '원문번역' 클릭 시 빈 페이지로 가는 오류 방지)
+    if (!hasStarted || startedView !== 'sourceTranslate') return;
 
     let cancelled = false;
     const runStructuring = async () => {
@@ -224,7 +226,7 @@ const App: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [extractedPageTexts]);
+  }, [extractedPageTexts, hasStarted, startedView]);
 
   useEffect(() => {
     listSessionRecords()
