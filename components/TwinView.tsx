@@ -635,6 +635,36 @@ const TwinView: React.FC<TwinViewProps & { onToggleBookmark: (id: string) => voi
     setLeftViewMode(mode);
   };
 
+  const handleOpenPreviewInNewWindow = () => {
+    const text = getLeftPreviewText();
+    const win = window.open('', '_blank', 'width=800,height=600,scrollbars=yes,resizable=yes');
+    if (!win) return;
+    win.document.write(`
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>원문 보기</title>
+<style>body{font-family:ui-monospace,monospace;font-size:100%;padding:16px;margin:0;line-height:1.6;white-space:pre-wrap;word-break:break-word;background:#f9fafb;color:#111}
+.toolbar{position:sticky;top:0;background:#fff;border-bottom:1px solid #e5e7eb;padding:8px 12px;margin:-16px -16px 16px -16px;display:flex;gap:8px;align-items:center;z-index:10}
+.toolbar button{padding:6px 12px;font-size:12px;border:1px solid #d1d5db;border-radius:6px;background:#fff;cursor:pointer}
+.toolbar button:hover{background:#f3f4f6}.toolbar .z{margin-left:auto;font-size:12px;color:#6b7280}</style></head>
+<body><div class="toolbar"><button type="button" id="zi">확대</button><button type="button" id="zo">축소</button><span class="z" id="zl">100%</span><button type="button" id="pr">인쇄</button></div><pre id="c"></pre>
+<script>var c=document.getElementById("c");var zl=document.getElementById("zl");c.textContent=${JSON.stringify(text)};var z=100;
+function ap(){document.body.style.fontSize=z+"%";zl.textContent=z+"%";}
+document.getElementById("zi").onclick=function(){z=Math.min(150,z+10);ap();};
+document.getElementById("zo").onclick=function(){z=Math.max(50,z-10);ap();};
+document.getElementById("pr").onclick=function(){window.print();};</script></body></html>
+    `);
+    win.document.close();
+  };
+
+  const handleCopyPreviewContent = async () => {
+    const text = getLeftPreviewText();
+    try {
+      await navigator.clipboard.writeText(text);
+      window.alert('내용이 클립보드에 복사되었습니다.');
+    } catch {
+      window.alert('복사에 실패했습니다.');
+    }
+  };
+
   const renderSegmentList = (isKorean: boolean) => {
       return (
           <div className={`p-6 font-sans ${!isKorean ? 'space-y-4' : ''}`}>
@@ -782,6 +812,14 @@ const TwinView: React.FC<TwinViewProps & { onToggleBookmark: (id: string) => voi
                     스크롤 동기화 {isTwinScrollSyncOn ? 'ON' : 'OFF'}
                   </button>
                   <button
+                    type="button"
+                    onClick={handleOpenPreviewInNewWindow}
+                    className="text-xs px-2 py-1 rounded border border-gray-300 bg-white text-gray-600 hover:bg-gray-100"
+                    title="새 창에서 보기 (확대, 축소, 인쇄)"
+                  >
+                    새창
+                  </button>
+                  <button
                     onClick={() => setIsSourceViewWindowFullscreen((prev) => !prev)}
                     className="text-xs px-2 py-1 rounded border border-gray-300 bg-white text-gray-600 hover:bg-gray-100"
                   >
@@ -803,6 +841,14 @@ const TwinView: React.FC<TwinViewProps & { onToggleBookmark: (id: string) => voi
                   <button onClick={() => handleLeftViewMode('english')} className={`text-xs px-2.5 py-1 rounded border ${leftViewMode === 'english' ? 'bg-primary-50 text-primary-700 border-primary-200' : 'bg-white text-gray-500 border-gray-300'}`}>영어만</button>
                   <button onClick={() => handleLeftViewMode('korean')} className={`text-xs px-2.5 py-1 rounded border ${leftViewMode === 'korean' ? 'bg-primary-50 text-primary-700 border-primary-200' : 'bg-white text-gray-500 border-gray-300'}`}>한국어만</button>
                   <button onClick={() => handleLeftViewMode('twin')} className={`text-xs px-2.5 py-1 rounded border ${leftViewMode === 'twin' ? 'bg-primary-50 text-primary-700 border-primary-200' : 'bg-white text-gray-500 border-gray-300'}`}>함께 보기</button>
+                  <button
+                    type="button"
+                    onClick={handleCopyPreviewContent}
+                    className="text-xs px-2.5 py-1 rounded border border-gray-300 bg-white text-gray-600 hover:bg-gray-100"
+                    title="현재 내용을 클립보드에 복사"
+                  >
+                    내용복사
+                  </button>
                 </div>
                 <div className="p-3 bg-gray-50 rounded border border-gray-200 text-xs font-mono flex-1 min-h-0 overflow-y-auto whitespace-pre-wrap">
                   {getLeftPreviewText()}
