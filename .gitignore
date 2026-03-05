@@ -13,27 +13,40 @@ node_modules/
 # Build output
 dist/
 dist-ssr/
+build/
+out/
 
 # Environment
 .env
 .env.*
 !.env.example
 *.local
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.pem
 
 # Cache
 .cache/
 .parcel-cache/
+.vite/
 coverage/
 *.tsbuildinfo
+.eslintcache
+.turbo/
 
 # Editor
 .vscode/*
 !.vscode/extensions.json
 .idea/
+*.sublime-*
 
 # OS
 .DS_Store
 Thumbs.db
+*.swp
+*~
 
 # Windows
 *.suo
@@ -41,3 +54,12 @@ Thumbs.db
 *.njsproj
 *.sln
 *.sw?
+
+# Deploy / Hosting
+.vercel
+.netlify
+.firebase/
+
+# Debug / Test
+.nyc_output/
+*.lcov
