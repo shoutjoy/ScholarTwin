@@ -2,8 +2,8 @@
 
 </div>
 
-# Run and deploy your AI Studio app
-
+# Run and deploy yourapp
+# 번역앱 
 This contains everything you need to run your app locally.
 
 https://scholartwin.onrender.com/
