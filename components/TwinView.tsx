@@ -510,6 +510,8 @@ const TwinView: React.FC<TwinViewProps & { onToggleBookmark: (id: string) => voi
   const [showSourceViewWindow, setShowSourceViewWindow] = useState(false);
   const [isSourceViewWindowFullscreen, setIsSourceViewWindowFullscreen] = useState(false);
   const [isTwinScrollSyncOn, setIsTwinScrollSyncOn] = useState(true);
+  const [sourceViewPanelZoom, setSourceViewPanelZoom] = useState(100);  // 창 크기 (50~150%)
+  const [sourceViewFontZoom, setSourceViewFontZoom] = useState(100);   // 폰트 크기 (50~150%)
 
   const figureSegments = segments.filter(s => s.type === SegmentType.FIGURE_CAPTION || s.type === SegmentType.TABLE || (s.type === SegmentType.TEXT && s.original.toLowerCase().startsWith('figure')));
   const bookmarkedSegments = segments.filter(s => s.isBookmarked);
@@ -794,15 +796,43 @@ document.getElementById("pr").onclick=function(){window.print();};</script></bod
 
           {showSourceViewWindow && viewMode === 'text' && (
             <div
-              className={`fixed z-40 bg-white border border-gray-200 shadow-xl flex flex-col ${
+              className={`z-40 bg-white border border-gray-200 shadow-xl flex flex-col rounded-lg overflow-hidden ${
                 isSourceViewWindowFullscreen
-                  ? 'inset-4 rounded-lg'
-                  : 'left-4 top-24 w-[360px] h-[320px] min-w-[280px] min-h-[220px] max-w-[70vw] max-h-[70vh] rounded-lg resize overflow-auto'
+                  ? 'fixed inset-4 rounded-lg'
+                  : 'absolute'
               }`}
+              style={
+                isSourceViewWindowFullscreen
+                  ? undefined
+                  : sourceViewPanelZoom === 100
+                    ? { left: 0, right: 0, top: '3rem', bottom: 0 }
+                    : {
+                        left: `${(100 - sourceViewPanelZoom) / 2}%`,
+                        top: `calc(3rem + (100% - 3rem) * (100 - ${sourceViewPanelZoom}) / 200)`,
+                        width: `${sourceViewPanelZoom}%`,
+                        height: `calc((100% - 3rem) * ${sourceViewPanelZoom} / 100)`,
+                        minWidth: 280,
+                        minHeight: 220,
+                        maxWidth: '100%',
+                        maxHeight: 'calc(100% - 3rem)',
+                      }
+              }
             >
-              <div className="px-3 py-2 border-b border-gray-200 flex items-center justify-between bg-gray-50">
+              <div className="px-3 py-2 border-b border-gray-200 flex items-center justify-between bg-gray-50 flex-wrap gap-2">
                 <span className="text-xs font-bold text-gray-600">원문 보기 설정</span>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-[10px] text-gray-500 mr-1">페이지</span>
+                  <div className="flex items-center gap-0.5 border border-gray-300 rounded bg-white">
+                    <button type="button" onClick={() => setSourceViewPanelZoom((z) => Math.max(50, z - 10))} className="px-1.5 py-0.5 text-gray-600 hover:bg-gray-100 text-sm font-bold">−</button>
+                    <span className="px-2 py-0.5 text-xs tabular-nums min-w-[2.5rem] text-center">{sourceViewPanelZoom}%</span>
+                    <button type="button" onClick={() => setSourceViewPanelZoom((z) => Math.min(150, z + 10))} className="px-1.5 py-0.5 text-gray-600 hover:bg-gray-100 text-sm font-bold">+</button>
+                  </div>
+                  <span className="text-[10px] text-gray-500 ml-2 mr-1">폰트</span>
+                  <div className="flex items-center gap-0.5 border border-gray-300 rounded bg-white">
+                    <button type="button" onClick={() => setSourceViewFontZoom((z) => Math.max(50, z - 10))} className="px-1.5 py-0.5 text-gray-600 hover:bg-gray-100 text-sm font-bold">−</button>
+                    <span className="px-2 py-0.5 text-xs tabular-nums min-w-[2.5rem] text-center">{sourceViewFontZoom}%</span>
+                    <button type="button" onClick={() => setSourceViewFontZoom((z) => Math.min(300, z + 10))} className="px-1.5 py-0.5 text-gray-600 hover:bg-gray-100 text-sm font-bold">+</button>
+                  </div>
                   <button
                     type="button"
                     onClick={() => setIsTwinScrollSyncOn((prev) => !prev)}
@@ -850,8 +880,16 @@ document.getElementById("pr").onclick=function(){window.print();};</script></bod
                     내용복사
                   </button>
                 </div>
-                <div className="p-3 bg-gray-50 rounded border border-gray-200 text-xs font-mono flex-1 min-h-0 overflow-y-auto whitespace-pre-wrap">
-                  {getLeftPreviewText()}
+                {/* 문서 페이지: 페이지 밖은 어둡게, 흰 페이지가 내부창에 꽉 차게 */}
+                <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-gray-600">
+                  <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-white rounded-sm shadow-inner">
+                    <div
+                      className="p-4 flex-1 min-h-0 overflow-y-auto overflow-x-auto text-xs font-mono whitespace-pre-wrap"
+                      style={{ fontSize: `${sourceViewFontZoom}%` }}
+                    >
+                      {getLeftPreviewText()}
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>

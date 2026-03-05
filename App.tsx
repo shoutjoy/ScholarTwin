@@ -1553,12 +1553,12 @@ const App: React.FC = () => {
                   </div>
               </div>
             ) : hasStarted && startedView === 'sourceTranslate' ? (
-              <div className="flex w-full h-full">
+              <div className="flex w-full h-full min-h-0">
                  <SidebarNav totalPages={totalPages} processedPages={processedPageIndices} segments={segments} onPageClick={handleSidebarPageClick} onHeadingClick={handleSidebarHeadingClick} isProcessing={isProcessing} isOpen={isSidebarOpen} onToggle={() => setIsSidebarOpen(!isSidebarOpen)} />
-                 <div className="flex-1 flex min-w-0">
-                   <div className="flex-1 flex flex-col border-r border-gray-200 overflow-hidden">
+                 <div className="flex-1 flex min-w-0 min-h-0">
+                   <div className="flex-1 flex flex-col border-r border-gray-200 overflow-hidden min-w-0 min-h-0">
                      <div className="flex-shrink-0 px-4 py-2 border-b border-gray-200 bg-gray-50 font-bold text-sm text-gray-700">원문</div>
-                     <div ref={originalScrollRef} onScroll={() => syncScrollByRatio('original')} className="flex-1 overflow-y-auto p-4">
+                     <div ref={originalScrollRef} onScroll={() => syncScrollByRatio('original')} className="flex-1 min-h-0 overflow-y-auto p-4">
                        {extractedPageTexts && extractedPageTexts.length > 0 ? (
                          extractedPageTexts.map(p => (
                           <div
@@ -1590,7 +1590,7 @@ const App: React.FC = () => {
                        {structuringError && <p className="text-xs text-amber-700 mt-2">{structuringError}</p>}
                      </div>
                    </div>
-                  <div className="flex-1 flex flex-col overflow-hidden bg-slate-50">
+                  <div className="flex-1 flex flex-col overflow-hidden bg-slate-50 min-w-0 min-h-0">
                     <div className="flex-shrink-0 px-4 py-2 border-b border-gray-200 bg-slate-100 font-bold text-sm text-gray-700 flex items-center justify-between">
                       <span>AI페이지번역</span>
                       <button
@@ -1600,7 +1600,7 @@ const App: React.FC = () => {
                         {isPageScrollSyncOn ? 'Sync ON' : 'Sync OFF'}
                       </button>
                     </div>
-                    <div ref={aiScrollRef} onScroll={() => syncScrollByRatio('ai')} className="flex-1 overflow-y-auto p-4">
+                    <div ref={aiScrollRef} onScroll={() => syncScrollByRatio('ai')} className="flex-1 min-h-0 overflow-y-auto p-4">
                       {pageTranslating ? (
                         <div className="h-full flex flex-col items-center justify-center text-gray-500 text-sm">
                           <div className="w-8 h-8 border-2 border-primary-500 border-t-transparent rounded-full animate-spin mb-3" />
